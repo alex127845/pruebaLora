@@ -10,16 +10,21 @@
 #define LORA_DIO1 14
 #define FILE_PATH "/archivo.txt"
 #define CHUNK_SIZE 200
-#define ACK_TIMEOUT 5000  // 5 segundos
+#define ACK_TIMEOUT 3000
 #define MAX_RETRIES 3
 
 SX1262 radio = new Module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY);
+
+volatile bool ackReceived = false;
+void IRAM_ATTR setFlag(void) { 
+  ackReceived = true; 
+}
 
 void setup() {
   Serial.begin(115200);
   delay(2000);
   
-  Serial.println("\n=== TRANSMISOR LoRa ===");
+  Serial.println("\n=== TRANSMISOR LoRa MEJORADO ===");
 
   if (!LittleFS.begin(true)) {
     Serial.println("❌ Error montando LittleFS");
@@ -50,7 +55,6 @@ void setup() {
 
   Serial.println("✅ Radio configurado");
   
-  // Esperar un momento para que el RX esté listo
   Serial.println("\n⏱️  Esperando 3 segundos antes de transmitir...");
   delay(3000);
   
@@ -99,6 +103,9 @@ void sendFile(const char* path) {
       if (retries > 0) Serial.printf(" (reintento %d/%d)", retries, MAX_RETRIES);
       Serial.println();
 
+      // Limpiar flag de interrupción
+      ackReceived = false;
+      
       // Transmitir
       int state = radio.transmit(pkt, 4 + bytesRead);
       
@@ -109,72 +116,71 @@ void sendFile(const char* path) {
         continue;
       }
 
-      Serial.println("   ✅ Transmitido OK");
-      Serial.print("   ⏳ Esperando ACK");
+      Serial.println("   ✅ Transmitido OK, esperando ACK...");
 
-      // CRÍTICO: Dar tiempo para que el radio complete la TX
-      delay(100);
+      // IMPORTANTE: Dar tiempo para que el radio complete físicamente la TX
+      delay(200);
 
-      // Esperar ACK
-      bool ackReceived = false;
-      unsigned long startWait = millis();
+      // Configurar interrupción para recibir ACK
+      radio.setDio1Action(setFlag);
       
-      // Poner en modo recepción
+      // Cambiar a modo recepción
       int rxState = radio.startReceive();
       if (rxState != RADIOLIB_ERR_NONE) {
-        Serial.printf("\n   ❌ Error en startReceive: %d\n", rxState);
+        Serial.printf("   ❌ Error en startReceive: %d\n", rxState);
         retries++;
+        delay(500);
         continue;
       }
 
-      while (millis() - startWait < ACK_TIMEOUT) {
-        uint8_t ackBuffer[20];
-        int recvState = radio.readData(ackBuffer, sizeof(ackBuffer));
-        
-        if (recvState == RADIOLIB_ERR_NONE) {
-          size_t ackLen = radio.getPacketLength();
+      // Esperar ACK con interrupción
+      unsigned long startWait = millis();
+      bool validAck = false;
+      
+      while (millis() - startWait < ACK_TIMEOUT && !validAck) {
+        if (ackReceived) {
+          ackReceived = false;
           
-          Serial.printf("\n   📨 Recibido paquete de %d bytes: ", ackLen);
-          for(int i = 0; i < min(ackLen, (size_t)10); i++) {
-            Serial.printf("%02X ", ackBuffer[i]);
-          }
-          Serial.println();
+          uint8_t ackBuffer[20];
+          int recvState = radio.readData(ackBuffer, sizeof(ackBuffer));
           
-          // Verificar que sea ACK válido
-          if (ackLen == 5 && ackBuffer[0] == 'A' && ackBuffer[1] == 'C' && ackBuffer[2] == 'K') {
-            uint16_t ackIndex;
-            memcpy(&ackIndex, ackBuffer + 3, 2);
+          if (recvState == RADIOLIB_ERR_NONE) {
+            size_t ackLen = radio.getPacketLength();
             
-            Serial.printf("   🔍 ACK para índice %u (esperamos %u)\n", ackIndex, index);
+            Serial.printf("   📨 ACK recibido: %d bytes | RSSI: %.1f dBm | SNR: %.1f dB\n", 
+                         ackLen, radio.getRSSI(), radio.getSNR());
             
-            if (ackIndex == index) {
-              Serial.printf("   ✅ ACK correcto! (RSSI: %.1f dBm)\n", radio.getRSSI());
-              ackReceived = true;
-              break;
+            // Verificar formato ACK: "ACK" + index(2 bytes)
+            if (ackLen == 5 && ackBuffer[0] == 'A' && ackBuffer[1] == 'C' && ackBuffer[2] == 'K') {
+              uint16_t ackIndex;
+              memcpy(&ackIndex, ackBuffer + 3, 2);
+              
+              if (ackIndex == index) {
+                Serial.printf("   ✅ ACK válido para fragmento %u\n\n", index + 1);
+                validAck = true;
+                success = true;
+              } else {
+                Serial.printf("   ⚠️  ACK con índice incorrecto (recibido:%u esperado:%u)\n", ackIndex, index);
+              }
             } else {
-              Serial.printf("   ⚠️  ACK con índice incorrecto\n");
+              Serial.println("   ⚠️  Paquete no es ACK válido");
             }
-          } else {
-            Serial.println("   ⚠️  Paquete no es ACK válido");
+            
+            // Continuar escuchando si no es el ACK correcto
+            if (!validAck) {
+              radio.startReceive();
+            }
+          } else if (recvState == RADIOLIB_ERR_CRC_MISMATCH) {
+            Serial.println("   ⚠️  ACK corrupto (CRC error)");
+            radio.startReceive();
           }
-          
-          // Continuar escuchando
-          radio.startReceive();
         }
         
-        // Mostrar progreso
-        if ((millis() - startWait) % 1000 == 0) {
-          Serial.print(".");
-        }
-        
-        delay(50);
+        delay(10);
       }
 
-      if (ackReceived) {
-        success = true;
-        Serial.println();
-      } else {
-        Serial.println(" ❌ Timeout");
+      if (!success) {
+        Serial.println("   ❌ Timeout esperando ACK");
         retries++;
         delay(1000);
       }
@@ -182,15 +188,12 @@ void sendFile(const char* path) {
 
     if (!success) {
       Serial.printf("\n❌ FALLO CRÍTICO: Fragmento %u no confirmado después de %d intentos\n", index + 1, MAX_RETRIES);
-      Serial.println("   Verifique:");
-      Serial.println("   - Que el receptor esté encendido y funcionando");
-      Serial.println("   - La distancia entre dispositivos");
-      Serial.println("   - Posibles interferencias\n");
+      Serial.println("   Abortando transmisión...\n");
       f.close();
       return;
     }
 
-    delay(100); // Pequeña pausa entre fragmentos
+    delay(100); // Pausa entre fragmentos
   }
 
   f.close();

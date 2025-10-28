@@ -9,6 +9,7 @@
 #define LORA_DIO1 14
 #define FILE_PATH "/archivo_recibido.txt"
 #define MAX_PACKET_SIZE 250
+#define ACK_DELAY 300  // Delay antes de enviar ACK (ms)
 
 SX1262 radio = new Module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
@@ -22,7 +23,7 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
   
-  Serial.println("\n=== RECEPTOR LoRa ===");
+  Serial.println("\n=== RECEPTOR LoRa MEJORADO ===");
 
   if (!LittleFS.begin(true)) {
     Serial.println("❌ Error montando LittleFS");
@@ -67,12 +68,10 @@ void loop() {
   if (receivedFlag) {
     receivedFlag = false;
 
-    // Leer el paquete SIN especificar tamaño - RadioLib maneja esto
     uint8_t buffer[MAX_PACKET_SIZE];
     int state = radio.readData(buffer, MAX_PACKET_SIZE);
 
     if (state == RADIOLIB_ERR_NONE) {
-      // Obtener tamaño REAL del paquete recibido
       size_t packetLen = radio.getPacketLength();
       
       Serial.printf("📡 Paquete recibido: %d bytes | RSSI: %.1f dBm | SNR: %.1f dB\n", 
@@ -81,7 +80,7 @@ void loop() {
       if (packetLen >= 4) {
         processPacket(buffer, packetLen);
       } else {
-        Serial.printf("⚠️  Paquete muy corto: %d bytes (esperado >= 4)\n", packetLen);
+        Serial.printf("⚠️  Paquete muy corto: %d bytes\n", packetLen);
       }
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
       Serial.println("❌ Error CRC - paquete corrupto");
@@ -90,38 +89,28 @@ void loop() {
     }
 
     // Pequeña pausa antes de reiniciar recepción
-    delay(10);
+    delay(50);
     
     // Reiniciar recepción
+    receivedFlag = false;  // Limpiar flag por si acaso
     int restartState = radio.startReceive();
     if (restartState != RADIOLIB_ERR_NONE) {
       Serial.printf("⚠️  Error en startReceive: %d\n", restartState);
     }
   }
   
-  yield(); // Dar tiempo al sistema
+  yield();
 }
 
 void processPacket(uint8_t* data, size_t len) {
-  // FILTRAR ACKs que son ecos de nuestra propia transmisión
-  if (len == 5 && data[0] == 'A' && data[1] == 'C' && data[2] == 'K') {
-    Serial.println("🔄 ACK detectado (eco propio) - ignorando");
-    return;
-  }
-  
-  // Extraer índice y total (little-endian)
+  // Extraer índice y total
   uint16_t index, total;
   memcpy(&index, data, 2);
   memcpy(&total, data + 2, 2);
 
   // Validar valores razonables
   if (index >= 1000 || total == 0 || total >= 1000) {
-    Serial.printf("⚠️  Valores sospechosos - index:%u total:%u - posible corrupción\n", index, total);
-    Serial.print("   Bytes raw: ");
-    for(int i = 0; i < min(len, (size_t)10); i++) {
-      Serial.printf("%02X ", data[i]);
-    }
-    Serial.println();
+    Serial.printf("⚠️  Valores inválidos - index:%u total:%u\n", index, total);
     return;
   }
 
@@ -133,8 +122,8 @@ void processPacket(uint8_t* data, size_t len) {
   const char* mode = (index == 0) ? "w" : "a";
   File file = LittleFS.open(FILE_PATH, mode);
   if (!file) {
-    Serial.println("❌ Error abriendo archivo para escritura");
-    sendAck(index); // Enviar ACK de todas formas
+    Serial.println("❌ Error abriendo archivo");
+    sendAck(index);
     return;
   }
   
@@ -144,45 +133,43 @@ void processPacket(uint8_t* data, size_t len) {
 
   if (written != dataLen) {
     Serial.printf("⚠️  Escritura incompleta: %d de %d bytes\n", written, dataLen);
+  } else {
+    Serial.printf("✅ Datos escritos correctamente\n");
   }
 
+  // IMPORTANTE: Esperar antes de enviar ACK para dar tiempo al TX
+  delay(ACK_DELAY);
+  
   // Enviar ACK
   sendAck(index);
 
   // Verificar si completamos el archivo
   if (index + 1 == total) {
-    delay(100); // Dar tiempo a que se complete la escritura
+    delay(200);
     showReceivedFile();
   }
 }
 
 void sendAck(uint16_t index) {
-  // ACK: "ACK" + index (2 bytes)
+  // Crear ACK: "ACK" + index (2 bytes)
   uint8_t ackPacket[5] = {'A', 'C', 'K'};
   memcpy(ackPacket + 3, &index, 2);
   
-  // CRÍTICO: Limpiar flag ANTES de transmitir
-  receivedFlag = false;
+  Serial.printf("📤 Enviando ACK[%u]... ", index);
   
-  Serial.printf("📤 Enviando ACK[%u]: ", index);
-  for(int i = 0; i < 5; i++) {
-    Serial.printf("%02X ", ackPacket[i]);
-  }
-  Serial.println();
-  
+  // Transmitir ACK
   int state = radio.transmit(ackPacket, sizeof(ackPacket));
   
   if (state == RADIOLIB_ERR_NONE) {
-    Serial.printf("✅ ACK transmitido OK\n\n");
+    Serial.println("✅ OK");
   } else {
-    Serial.printf("❌ Error enviando ACK: %d\n\n", state);
+    Serial.printf("❌ Error: %d\n", state);
   }
   
-  // Esperar a que la transmisión se complete físicamente
+  // Esperar a que se complete la transmisión física
   delay(150);
   
-  // Limpiar flag nuevamente por si acaso
-  receivedFlag = false;
+  Serial.println();
 }
 
 void showReceivedFile() {
@@ -197,7 +184,7 @@ void showReceivedFile() {
   Serial.printf("📁 Guardado en: %s\n", FILE_PATH);
   Serial.printf("📊 Tamaño final: %d bytes\n\n", recibido.size());
   
-  Serial.println("📄 Primeros 500 caracteres del archivo:");
+  Serial.println("📄 Primeros 500 caracteres:");
   Serial.println("================================");
   
   int count = 0;
