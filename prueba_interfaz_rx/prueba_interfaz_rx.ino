@@ -9,7 +9,7 @@
 #define LORA_RST  12
 #define LORA_BUSY 13
 #define LORA_DIO1 14
-#define FILE_PATH "/archivo_recibido.txt"
+#define FILE_PATH "/archivo_recibido.pdf"
 #define MAX_PACKET_SIZE 250
 #define ACK_DELAY 300
 
@@ -113,13 +113,14 @@ void setupWebServer() {
       File file = LittleFS.open(FILE_PATH, "r");
       html += "<div class='info'>";
       html += "<span class='status ready'></span><strong>Archivo recibido</strong><br>";
-      html += "📁 Nombre: <code>archivo_recibido.txt</code><br>";
+      html += "📁 Nombre: <code>archivo_recibido</code><br>";
       html += "📊 Tamaño: " + String(file.size()) + " bytes<br>";
       html += "⏰ Listo para descargar";
       file.close();
       html += "</div>";
       html += "<button onclick='location.href=\"/download\"'>📥 Descargar Archivo</button>";
-      html += "<button class='btn-secondary' onclick='location.href=\"/view\"'>👁️ Ver Contenido</button>";
+      //html += "<button class='btn-secondary' onclick='location.href=\"/view\"'>👁️ Ver Contenido</button>";
+      html += "<button class='btn-secondary' onclick='window.open(\"/download\", \"_blank\")'>👁️ Abrir PDF</button>";
       html += "<button class='btn-danger' onclick='if(confirm(\"¿Eliminar archivo?\")) location.href=\"/delete\"'>🗑️ Eliminar</button>";
     } else {
       html += "<div class='info'>";
@@ -136,10 +137,10 @@ void setupWebServer() {
     request->send(200, "text/html", html);
   });
 
-  // Descargar archivo
+  // Descargar archivo en pdf
   server.on("/download", HTTP_GET, [](AsyncWebServerRequest *request){
     if (LittleFS.exists(FILE_PATH)) {
-      request->send(LittleFS, FILE_PATH, "text/plain", true);
+      request->send(LittleFS, FILE_PATH, "application/pdf", true);  // ✅ Correcto para PDF
     } else {
       request->send(404, "text/plain", "Archivo no encontrado");
     }
