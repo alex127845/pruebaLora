@@ -3,7 +3,7 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include <WiFi.h>
-#include <WebServer.h>
+#include <ESPAsyncWebServer.h>
 
 #define LORA_CS   8
 #define LORA_RST  12
@@ -13,52 +13,52 @@
 #define MAX_PACKET_SIZE 250
 #define ACK_DELAY 300
 
-// Configura tu WiFi
-const char* ssid = "wifi_gtr";
-const char* password = "123456789";
+// Configuración WiFi AP
+const char* ssid = "LoRa-Gateway";
+const char* password = "12345678";  // Mínimo 8 caracteres
 
 SX1262 radio = new Module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY);
-WebServer server(80);
+AsyncWebServer server(80);
 
 volatile bool receivedFlag = false;
-void IRAM_ATTR setFlag(void) { receivedFlag = true; }
+
+void IRAM_ATTR setFlag(void) {
+  receivedFlag = true;
+}
 
 void setup() {
   Serial.begin(115200);
   delay(2000);
   
-  Serial.println("\n=== RECEPTOR LoRa CON SERVIDOR WEB ===");
+  Serial.println("\n=== RECEPTOR LoRa + GATEWAY WEB ===");
 
-  // Inicializar LittleFS
+  // Iniciar LittleFS
   if (!LittleFS.begin(true)) {
     Serial.println("❌ Error montando LittleFS");
     while(1) delay(1000);
   }
   Serial.println("✅ LittleFS montado");
 
-  // Conectar WiFi
-  WiFi.begin(ssid, password);
-  Serial.print("🌐 Conectando a WiFi");
-  
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✅ WiFi conectado");
-    Serial.print("📡 IP Address: ");
-    Serial.println(WiFi.localIP());
-    Serial.println("   Accede desde tu navegador a esta IP");
-    setupWebServer();
-  } else {
-    Serial.println("\n⚠️  WiFi no conectado - solo modo LoRa");
+  // Limpiar archivo anterior
+  if (LittleFS.exists(FILE_PATH)) {
+    LittleFS.remove(FILE_PATH);
+    Serial.println("🗑️  Archivo anterior eliminado");
   }
 
-  // Inicializar radio
-  Serial.println("\nIniciando radio...");
+  // Configurar WiFi como Access Point
+  Serial.println("\n📡 Configurando WiFi AP...");
+  WiFi.softAP(ssid, password);
+  IPAddress IP = WiFi.softAPIP();
+  Serial.printf("✅ WiFi AP iniciado\n");
+  Serial.printf("   SSID: %s\n", ssid);
+  Serial.printf("   Password: %s\n", password);
+  Serial.printf("   IP: %s\n\n", IP.toString().c_str());
+
+  // Configurar servidor web
+  setupWebServer();
+
+  // Iniciar radio LoRa
+  Serial.println("Iniciando radio...");
   int state = radio.begin(915.0);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("❌ Error iniciando SX1262, código: %d\n", state);
@@ -78,16 +78,123 @@ void setup() {
   }
 
   Serial.println("✅ Radio configurado");
-  Serial.println("👂 Escuchando paquetes LoRa...\n");
+  Serial.println("👂 Escuchando paquetes LoRa...");
+  Serial.printf("🌐 Servidor web disponible en: http://%s\n\n", IP.toString().c_str());
+}
+
+void setupWebServer() {
+  // Página principal con HTML mejorado
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    String html = "<!DOCTYPE html><html><head>";
+    html += "<meta charset='UTF-8'>";
+    html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+    html += "<title>LoRa Gateway</title>";
+    html += "<style>";
+    html += "body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; background: #f5f5f5; }";
+    html += ".container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }";
+    html += "h1 { color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }";
+    html += ".info { background: #e3f2fd; padding: 15px; border-radius: 5px; margin: 20px 0; }";
+    html += ".status { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }";
+    html += ".status.ready { background: #4CAF50; }";
+    html += ".status.waiting { background: #ff9800; }";
+    html += "button { background: #4CAF50; color: white; padding: 12px 30px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin: 10px 5px; }";
+    html += "button:hover { background: #45a049; }";
+    html += "button:disabled { background: #ccc; cursor: not-allowed; }";
+    html += ".btn-secondary { background: #2196F3; }";
+    html += ".btn-secondary:hover { background: #0b7dda; }";
+    html += ".btn-danger { background: #f44336; }";
+    html += ".btn-danger:hover { background: #da190b; }";
+    html += "</style></head><body>";
+    html += "<div class='container'>";
+    html += "<h1>🛰️ LoRa Gateway</h1>";
+    
+    // Estado del archivo
+    if (LittleFS.exists(FILE_PATH)) {
+      File file = LittleFS.open(FILE_PATH, "r");
+      html += "<div class='info'>";
+      html += "<span class='status ready'></span><strong>Archivo recibido</strong><br>";
+      html += "📁 Nombre: <code>archivo_recibido.txt</code><br>";
+      html += "📊 Tamaño: " + String(file.size()) + " bytes<br>";
+      html += "⏰ Listo para descargar";
+      file.close();
+      html += "</div>";
+      html += "<button onclick='location.href=\"/download\"'>📥 Descargar Archivo</button>";
+      html += "<button class='btn-secondary' onclick='location.href=\"/view\"'>👁️ Ver Contenido</button>";
+      html += "<button class='btn-danger' onclick='if(confirm(\"¿Eliminar archivo?\")) location.href=\"/delete\"'>🗑️ Eliminar</button>";
+    } else {
+      html += "<div class='info'>";
+      html += "<span class='status waiting'></span><strong>Esperando archivo LoRa...</strong><br>";
+      html += "El receptor está escuchando transmisiones.";
+      html += "</div>";
+      html += "<button disabled>📥 Sin archivo para descargar</button>";
+    }
+    
+    html += "<br><br>";
+    html += "<button class='btn-secondary' onclick='location.reload()'>🔄 Actualizar</button>";
+    html += "</div></body></html>";
+    
+    request->send(200, "text/html", html);
+  });
+
+  // Descargar archivo
+  server.on("/download", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (LittleFS.exists(FILE_PATH)) {
+      request->send(LittleFS, FILE_PATH, "text/plain", true);
+    } else {
+      request->send(404, "text/plain", "Archivo no encontrado");
+    }
+  });
+
+  // Ver contenido del archivo
+  server.on("/view", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (LittleFS.exists(FILE_PATH)) {
+      File file = LittleFS.open(FILE_PATH, "r");
+      String content = file.readString();
+      file.close();
+      
+      String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
+      html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+      html += "<title>Contenido del Archivo</title>";
+      html += "<style>body{font-family:monospace;padding:20px;background:#f5f5f5;}";
+      html += "pre{background:white;padding:20px;border-radius:5px;overflow-x:auto;}</style></head>";
+      html += "<body><h2>📄 Contenido del Archivo</h2>";
+      html += "<pre>" + content + "</pre>";
+      html += "<br><button onclick='history.back()'>← Volver</button></body></html>";
+      
+      request->send(200, "text/html", html);
+    } else {
+      request->send(404, "text/plain", "Archivo no encontrado");
+    }
+  });
+
+  // Eliminar archivo
+  server.on("/delete", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (LittleFS.exists(FILE_PATH)) {
+      LittleFS.remove(FILE_PATH);
+      request->redirect("/");
+    } else {
+      request->send(404, "text/plain", "Archivo no encontrado");
+    }
+  });
+
+  // API JSON para estado
+  server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request){
+    String json = "{";
+    json += "\"file_exists\": " + String(LittleFS.exists(FILE_PATH) ? "true" : "false");
+    if (LittleFS.exists(FILE_PATH)) {
+      File file = LittleFS.open(FILE_PATH, "r");
+      json += ", \"file_size\": " + String(file.size());
+      file.close();
+    }
+    json += "}";
+    request->send(200, "application/json", json);
+  });
+
+  server.begin();
+  Serial.println("✅ Servidor web iniciado");
 }
 
 void loop() {
-  // Manejar servidor web
-  if (WiFi.status() == WL_CONNECTED) {
-    server.handleClient();
-  }
-  
-  // Manejar recepción LoRa
   if (receivedFlag) {
     receivedFlag = false;
 
@@ -97,7 +204,7 @@ void loop() {
     if (state == RADIOLIB_ERR_NONE) {
       size_t packetLen = radio.getPacketLength();
       
-      Serial.printf("📡 Paquete: %d bytes | RSSI: %.1f dBm | SNR: %.1f dB\n", 
+      Serial.printf("📡 Paquete recibido: %d bytes | RSSI: %.1f dBm | SNR: %.1f dB\n", 
                     packetLen, radio.getRSSI(), radio.getSNR());
       
       if (packetLen >= 4) {
@@ -106,142 +213,20 @@ void loop() {
         Serial.printf("⚠️  Paquete muy corto: %d bytes\n", packetLen);
       }
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
-      Serial.println("❌ Error CRC");
+      Serial.println("❌ Error CRC - paquete corrupto");
+    } else {
+      Serial.printf("❌ Error lectura: %d\n", state);
     }
 
     delay(50);
     receivedFlag = false;
-    radio.startReceive();
+    int restartState = radio.startReceive();
+    if (restartState != RADIOLIB_ERR_NONE) {
+      Serial.printf("⚠️  Error en startReceive: %d\n", restartState);
+    }
   }
   
   yield();
-}
-
-void setupWebServer() {
-  // Página principal
-  server.on("/", HTTP_GET, []() {
-    String html = "<!DOCTYPE html><html><head>";
-    html += "<meta charset='UTF-8'>";
-    html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-    html += "<title>Receptor LoRa</title>";
-    html += "<style>";
-    html += "body { font-family: Arial; max-width: 800px; margin: 50px auto; padding: 20px; }";
-    html += "h1 { color: #333; }";
-    html += ".file { background: #f0f0f0; padding: 15px; margin: 10px 0; border-radius: 5px; }";
-    html += "a { display: inline-block; background: #007bff; color: white; padding: 10px 20px; ";
-    html += "text-decoration: none; border-radius: 5px; margin: 5px; }";
-    html += "a:hover { background: #0056b3; }";
-    html += ".info { color: #666; font-size: 14px; }";
-    html += "</style></head><body>";
-    html += "<h1>📡 Receptor LoRa - Archivos Recibidos</h1>";
-    
-    // Listar archivos
-    File root = LittleFS.open("/");
-    File file = root.openNextFile();
-    
-    bool hasFiles = false;
-    while (file) {
-      if (!file.isDirectory()) {
-        hasFiles = true;
-        html += "<div class='file'>";
-        html += "<strong>📄 " + String(file.name()) + "</strong><br>";
-        html += "<span class='info'>Tamaño: " + String(file.size()) + " bytes</span><br>";
-        html += "<a href='/download?file=" + String(file.name()) + "'>⬇️ Descargar</a>";
-        html += "<a href='/view?file=" + String(file.name()) + "'>👁️ Ver</a>";
-        html += "<a href='/delete?file=" + String(file.name()) + "' onclick='return confirm(\"¿Eliminar?\")'>🗑️ Eliminar</a>";
-        html += "</div>";
-      }
-      file = root.openNextFile();
-    }
-    
-    if (!hasFiles) {
-      html += "<p>No hay archivos recibidos aún.</p>";
-    }
-    
-    html += "<br><a href='/'>🔄 Actualizar</a>";
-    html += "</body></html>";
-    
-    server.send(200, "text/html", html);
-  });
-  
-  // Descargar archivo
-  server.on("/download", HTTP_GET, []() {
-    if (!server.hasArg("file")) {
-      server.send(400, "text/plain", "Falta parámetro 'file'");
-      return;
-    }
-    
-    String fileName = server.arg("file");
-    String filePath = "/" + fileName;
-    
-    if (!LittleFS.exists(filePath)) {
-      server.send(404, "text/plain", "Archivo no encontrado");
-      return;
-    }
-    
-    File file = LittleFS.open(filePath, "r");
-    if (!file) {
-      server.send(500, "text/plain", "Error abriendo archivo");
-      return;
-    }
-    
-    // Detectar tipo MIME según extensión
-    String contentType = "application/octet-stream";
-    if (fileName.endsWith(".txt")) contentType = "text/plain";
-    else if (fileName.endsWith(".pdf")) contentType = "application/pdf";
-    else if (fileName.endsWith(".jpg") || fileName.endsWith(".jpeg")) contentType = "image/jpeg";
-    else if (fileName.endsWith(".png")) contentType = "image/png";
-    else if (fileName.endsWith(".json")) contentType = "application/json";
-    
-    server.streamFile(file, contentType);
-    file.close();
-    
-    Serial.printf("📥 Archivo descargado: %s\n", fileName.c_str());
-  });
-  
-  // Ver contenido (solo texto)
-  server.on("/view", HTTP_GET, []() {
-    if (!server.hasArg("file")) {
-      server.send(400, "text/plain", "Falta parámetro 'file'");
-      return;
-    }
-    
-    String fileName = server.arg("file");
-    String filePath = "/" + fileName;
-    
-    File file = LittleFS.open(filePath, "r");
-    if (!file) {
-      server.send(404, "text/plain", "Archivo no encontrado");
-      return;
-    }
-    
-    String content = file.readString();
-    file.close();
-    
-    server.send(200, "text/plain; charset=utf-8", content);
-  });
-  
-  // Eliminar archivo
-  server.on("/delete", HTTP_GET, []() {
-    if (!server.hasArg("file")) {
-      server.send(400, "text/plain", "Falta parámetro 'file'");
-      return;
-    }
-    
-    String fileName = server.arg("file");
-    String filePath = "/" + fileName;
-    
-    if (LittleFS.remove(filePath)) {
-      server.sendHeader("Location", "/");
-      server.send(302, "text/plain", "Redirigiendo...");
-      Serial.printf("🗑️  Archivo eliminado: %s\n", fileName.c_str());
-    } else {
-      server.send(500, "text/plain", "Error eliminando archivo");
-    }
-  });
-  
-  server.begin();
-  Serial.println("🌐 Servidor web iniciado en puerto 80");
 }
 
 void processPacket(uint8_t* data, size_t len) {
@@ -250,12 +235,12 @@ void processPacket(uint8_t* data, size_t len) {
   memcpy(&total, data + 2, 2);
 
   if (index >= 1000 || total == 0 || total >= 1000) {
-    Serial.printf("⚠️  Valores inválidos\n");
+    Serial.printf("⚠️  Valores inválidos - index:%u total:%u\n", index, total);
     return;
   }
 
   int dataLen = len - 4;
-  Serial.printf("📦 Fragmento [%u/%u] - %d bytes\n", index + 1, total, dataLen);
+  Serial.printf("📦 Fragmento [%u/%u] - %d bytes de datos\n", index + 1, total, dataLen);
 
   const char* mode = (index == 0) ? "w" : "a";
   File file = LittleFS.open(FILE_PATH, mode);
@@ -268,8 +253,10 @@ void processPacket(uint8_t* data, size_t len) {
   size_t written = file.write(data + 4, dataLen);
   file.close();
 
-  if (written == dataLen) {
-    Serial.println("✅ Escrito OK");
+  if (written != dataLen) {
+    Serial.printf("⚠️  Escritura incompleta: %d de %d bytes\n", written, dataLen);
+  } else {
+    Serial.printf("✅ Datos escritos correctamente\n");
   }
 
   delay(ACK_DELAY);
@@ -285,10 +272,15 @@ void sendAck(uint16_t index) {
   uint8_t ackPacket[5] = {'A', 'C', 'K'};
   memcpy(ackPacket + 3, &index, 2);
   
-  Serial.printf("📤 ACK[%u]... ", index);
+  Serial.printf("📤 Enviando ACK[%u]... ", index);
   
   int state = radio.transmit(ackPacket, sizeof(ackPacket));
-  Serial.println(state == RADIOLIB_ERR_NONE ? "✅" : "❌");
+  
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.println("✅ OK");
+  } else {
+    Serial.printf("❌ Error: %d\n", state);
+  }
   
   delay(150);
   Serial.println();
@@ -297,17 +289,29 @@ void sendAck(uint16_t index) {
 void showReceivedFile() {
   Serial.println("\n🎉 ¡ARCHIVO COMPLETO RECIBIDO!\n");
   
-  File file = LittleFS.open(FILE_PATH, "r");
-  if (!file) return;
-  
-  Serial.printf("📁 %s\n", FILE_PATH);
-  Serial.printf("📊 %d bytes\n", file.size());
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("🌐 Descárgalo en: http://%s/download?file=archivo_recibido.txt\n", 
-                  WiFi.localIP().toString().c_str());
+  File recibido = LittleFS.open(FILE_PATH, "r");
+  if (!recibido) {
+    Serial.println("❌ No se pudo abrir archivo recibido");
+    return;
   }
   
-  Serial.println();
-  file.close();
+  Serial.printf("📁 Guardado en: %s\n", FILE_PATH);
+  Serial.printf("📊 Tamaño final: %d bytes\n", recibido.size());
+  Serial.printf("🌐 Disponible para descarga en: http://%s\n\n", WiFi.softAPIP().toString().c_str());
+  
+  Serial.println("📄 Primeros 500 caracteres:");
+  Serial.println("================================");
+  
+  int count = 0;
+  while (recibido.available() && count < 500) {
+    Serial.write(recibido.read());
+    count++;
+  }
+  
+  if (recibido.available()) {
+    Serial.printf("\n... (%d bytes más)", recibido.size() - count);
+  }
+  
+  Serial.println("\n================================\n");
+  recibido.close();
 }
