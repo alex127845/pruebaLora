@@ -5,7 +5,6 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 
-// Pines SX1262 (Heltec V3)
 #define LORA_CS   8
 #define LORA_RST  12
 #define LORA_BUSY 13
@@ -14,7 +13,6 @@
 #define ACK_TIMEOUT 3000
 #define MAX_RETRIES 3
 
-// Configuración WiFi AP
 const char* ssid = "LoRa-TX";
 const char* password = "12345678";
 
@@ -34,9 +32,8 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
   
-  Serial.println("\n=== TRANSMISOR LoRa + WEB INTERFACE ===");
+  Serial.println("\n=== TRANSMISOR LoRa + WEB INTERFACE v2 ===");
 
-  // Iniciar LittleFS
   if (!LittleFS.begin(true)) {
     Serial.println("❌ Error montando LittleFS");
     while(1) delay(1000);
@@ -44,7 +41,6 @@ void setup() {
   Serial.println("✅ LittleFS montado");
   listFiles();
 
-  // Configurar WiFi como Access Point
   Serial.println("\n📡 Configurando WiFi AP...");
   WiFi.softAP(ssid, password);
   IPAddress IP = WiFi.softAPIP();
@@ -53,10 +49,8 @@ void setup() {
   Serial.printf("   Password: %s\n", password);
   Serial.printf("   IP: %s\n\n", IP.toString().c_str());
 
-  // Configurar servidor web
   setupWebServer();
 
-  // Iniciar radio LoRa
   Serial.println("Iniciando radio...");
   int state = radio.begin(915.0);
   if (state != RADIOLIB_ERR_NONE) {
@@ -75,7 +69,6 @@ void setup() {
 }
 
 void setupWebServer() {
-  // Página principal
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     String html = "<!DOCTYPE html><html><head>";
     html += "<meta charset='UTF-8'>";
@@ -114,16 +107,14 @@ void setupWebServer() {
     html += ".progress-fill { height: 100%; background: #667eea; transition: width 0.3s; }";
     html += "</style></head><body>";
     html += "<div class='container'>";
-    html += "<h1>📡 LoRa Transmisor</h1>";
+    html += "<h1>📡 LoRa Transmisor v2</h1>";
     
-    // Estado de transmisión
     if (transmitting) {
       html += "<div class='status transmitting'>⚡ Transmitiendo: " + currentFile + "...</div>";
     } else if (transmissionStatus != "") {
       html += "<div class='status " + String(transmissionStatus.startsWith("✅") ? "success" : "error") + "'>" + transmissionStatus + "</div>";
     }
 
-    // Información de almacenamiento
     size_t totalBytes = LittleFS.totalBytes();
     size_t usedBytes = LittleFS.usedBytes();
     int usedPercent = (usedBytes * 100) / totalBytes;
@@ -133,7 +124,6 @@ void setupWebServer() {
     html += "<div class='progress-bar'><div class='progress-fill' style='width:" + String(usedPercent) + "%'></div></div>";
     html += "</div>";
     
-    // Subir archivo
     html += "<div class='section'>";
     html += "<h2>📤 Subir Archivo</h2>";
     html += "<form class='upload-form' method='POST' action='/upload' enctype='multipart/form-data'>";
@@ -142,7 +132,6 @@ void setupWebServer() {
     html += "</form>";
     html += "</div>";
     
-    // Lista de archivos
     html += "<div class='section'>";
     html += "<h2>📁 Archivos Disponibles</h2>";
     
@@ -155,7 +144,6 @@ void setupWebServer() {
       if (!file.isDirectory()) {
         hasFiles = true;
         String fileName = String(file.name());
-        // ✅ Remover "/" del inicio solo para mostrar
         String displayName = fileName;
         if (displayName.startsWith("/")) {
           displayName = displayName.substring(1);
@@ -168,7 +156,6 @@ void setupWebServer() {
         html += "</div>";
         html += "<div class='btn-group'>";
         if (!transmitting) {
-          // ✅ Enviar el path completo con "/"
           html += "<button class='btn-send' onclick='sendFile(\"" + fileName + "\")'>📡 Transmitir</button>";
           html += "<button class='btn-delete' onclick='deleteFile(\"" + fileName + "\")'>🗑️</button>";
         } else {
@@ -207,7 +194,6 @@ void setupWebServer() {
     request->send(200, "text/html", html);
   });
 
-  // Subir archivo
   server.on("/upload", HTTP_POST, [](AsyncWebServerRequest *request){
     request->redirect("/");
   }, [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
@@ -215,7 +201,6 @@ void setupWebServer() {
     
     if (!index) {
       Serial.printf("📥 Subiendo: %s\n", filename.c_str());
-      // ✅ Asegurar que tenga "/" al guardar
       if (!filename.startsWith("/")) {
         filename = "/" + filename;
       }
@@ -232,19 +217,16 @@ void setupWebServer() {
     }
   });
 
-  // ✅ TRANSMITIR ARCHIVO (CORREGIDO)
   server.on("/send", HTTP_GET, [](AsyncWebServerRequest *request){
     if (request->hasParam("file")) {
       String filename = request->getParam("file")->value();
       
-      // ✅ El filename ya viene con "/" desde el HTML, pero por si acaso:
       if (!filename.startsWith("/")) {
         filename = "/" + filename;
       }
       
       Serial.printf("🚀 Solicitando transmisión de: %s\n", filename.c_str());
       
-      // Verificar que el archivo existe
       if (LittleFS.exists(filename)) {
         request->send(200, "text/plain", "Transmitiendo...");
         currentFile = filename;
@@ -259,12 +241,10 @@ void setupWebServer() {
     }
   });
 
-  // Eliminar archivo
   server.on("/delete", HTTP_GET, [](AsyncWebServerRequest *request){
     if (request->hasParam("file")) {
       String filename = request->getParam("file")->value();
       
-      // ✅ Asegurar que tenga "/"
       if (!filename.startsWith("/")) {
         filename = "/" + filename;
       }
@@ -285,7 +265,6 @@ void setupWebServer() {
 }
 
 void loop() {
-  // Procesar transmisión en background
   if (transmitting) {
     Serial.printf("\n📡 Iniciando transmisión de: %s\n", currentFile.c_str());
     bool result = sendFile(currentFile.c_str());
@@ -322,6 +301,7 @@ void listFiles() {
   Serial.println();
 }
 
+// ✅ FUNCIÓN MEJORADA: Envía metadatos primero
 bool sendFile(const char* path) {
   File f = LittleFS.open(path, "r");
   if (!f) {
@@ -330,10 +310,41 @@ bool sendFile(const char* path) {
   }
 
   uint32_t totalSize = f.size();
-  uint16_t totalChunks = (totalSize + CHUNK_SIZE - 1) / CHUNK_SIZE;
   
-  Serial.printf("📁 Archivo: %s\n", path);
+  // Extraer nombre del archivo (sin el "/")
+  String fileName = String(path);
+  if (fileName.startsWith("/")) {
+    fileName = fileName.substring(1);
+  }
+  
+  Serial.printf("📁 Archivo: %s\n", fileName.c_str());
   Serial.printf("📊 Tamaño: %u bytes\n", totalSize);
+  
+  // ✅ PASO 1: Enviar paquete de METADATOS
+  // Formato: "META" + tamaño_nombre(1 byte) + nombre + tamaño_archivo(4 bytes)
+  uint8_t nameLen = fileName.length();
+  if (nameLen > 100) nameLen = 100; // Límite de seguridad
+  
+  uint8_t metaPkt[1 + 4 + 1 + nameLen]; // 'M' + size(4) + nameLen(1) + nombre
+  metaPkt[0] = 'M'; // Identificador de metadata
+  memcpy(metaPkt + 1, &totalSize, 4);
+  metaPkt[5] = nameLen;
+  memcpy(metaPkt + 6, fileName.c_str(), nameLen);
+  
+  Serial.println("\n📤 Enviando metadatos del archivo...");
+  int metaState = radio.transmit(metaPkt, 6 + nameLen);
+  
+  if (metaState != RADIOLIB_ERR_NONE) {
+    Serial.printf("❌ Error enviando metadatos: %d\n", metaState);
+    f.close();
+    return false;
+  }
+  
+  Serial.println("✅ Metadatos enviados");
+  delay(500); // Dar tiempo al receptor
+  
+  // ✅ PASO 2: Enviar datos del archivo
+  uint16_t totalChunks = (totalSize + CHUNK_SIZE - 1) / CHUNK_SIZE;
   Serial.printf("📦 Fragmentos: %u\n\n", totalChunks);
 
   for (uint16_t index = 0; index < totalChunks; index++) {
