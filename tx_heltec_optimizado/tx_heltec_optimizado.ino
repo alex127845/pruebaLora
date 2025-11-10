@@ -524,16 +524,23 @@ bool sendFile(const char* path) {
                            ackLen, radio.getRSSI(), radio.getSNR());
               
               if (ackLen == 5 && ackBuffer[0] == 'A' && ackBuffer[1] == 'C' && ackBuffer[2] == 'K') {
-                uint16_t ackIndex;
-                memcpy(&ackIndex, ackBuffer + 3, 2);
+                uint16_t ackFragmentNumber;
+                memcpy(&ackFragmentNumber, ackBuffer + 3, 2);
                 
-                if (ackIndex == index) {
-                  Serial.printf("   ✅ ACK válido [%u]\n\n", index + 1);
+                // ✅ CAMBIO CRÍTICO: Comparar con número de fragmento
+                uint16_t expectedFragmentNumber = index + 1;
+                
+                if (ackFragmentNumber == expectedFragmentNumber) {
+                  Serial.printf("   ✅ ACK válido [%u]\n\n", expectedFragmentNumber);
                   validAck = true;
                   success = true;
                 } else {
-                  Serial.printf("   ⚠️  ACK wrong idx (rx:%u exp:%u)\n", ackIndex, index);
+                  Serial.printf("   ⚠️  ACK incorrecto (rx:%u exp:%u)\n", 
+                              ackFragmentNumber, expectedFragmentNumber);
                 }
+
+
+
               } else {
                 Serial.println("   ⚠️  No es ACK");
               }

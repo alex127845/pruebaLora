@@ -520,14 +520,14 @@ void processPacket(uint8_t* data, size_t len) {
   
   Serial.printf("📦 [%u/%u] %d bytes\n", index + 1, total, dataLen);
 
-  // ✅ Detectar duplicados
+  // Cuando detecta duplicado:
   if (index == lastReceivedIndex) {
     Serial.println("   ⚠️  Duplicado - reenviando ACK");
     bool isLastFragment = (index + 1 == total);
     bool isMultipleOfACK = ((index + 1) % currentACK == 0);
     if (isMultipleOfACK || isLastFragment) {
       delay(ACK_DELAY);
-      sendAck(index);
+      sendAck(index);  // ✅ Ahora enviará index+1 internamente
     }
     return;
   }
@@ -575,9 +575,12 @@ void sendAck(uint16_t index) {
   transmittingACK = true;
   
   uint8_t ackPacket[5] = {'A', 'C', 'K'};
-  memcpy(ackPacket + 3, &index, 2);
   
-  Serial.printf("📤 ACK[%u]... ", index);
+  // ✅ CAMBIO CRÍTICO: Enviar número de fragmento (index+1)
+  uint16_t fragmentNumber = index + 1;
+  memcpy(ackPacket + 3, &fragmentNumber, 2);
+  
+  Serial.printf("📤 ACK[%u]... ", fragmentNumber);
   
   radio.standby();
   int state = radio.transmit(ackPacket, sizeof(ackPacket));
