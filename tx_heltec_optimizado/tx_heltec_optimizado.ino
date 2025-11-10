@@ -423,7 +423,8 @@ bool sendFile(const char* path) {
   Serial.printf("📻 BW=%.0f, SF=%d, CR=4/%d, ACK=%d\n", currentBW, currentSF, currentCR, currentACK);
   
   // ✅ METADATOS CON MAGIC BYTES
-  uint8_t nameLen = min(fileName.length(), 100);
+  //uint8_t nameLen = min(fileName.length(), 100);
+  uint8_t nameLen = min((size_t)fileName.length(), (size_t)100);
   uint8_t metaPkt[2 + 4 + 1 + nameLen];  // +2 para magic bytes
   
   metaPkt[0] = METADATA_MAGIC_1;  // ✅ Magic byte 1
