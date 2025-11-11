@@ -126,18 +126,41 @@ void setup() {
 }
 
 void applyLoRaConfig() {
-  radio.setSpreadingFactor(currentSF);
-  radio.setBandwidth(currentBW);
-  radio.setCodingRate(currentCR);
+  Serial.println("\n📻 Aplicando nueva configuración LoRa...");
+  
+  // ✅ CRÍTICO: Poner el radio en standby antes de cambiar configuración
+  radio.standby();
+  delay(100);
+  
+  // Aplicar configuración
+  int state = radio.setSpreadingFactor(currentSF);
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.printf("⚠️  Error SF: %d\n", state);
+  }
+  
+  state = radio.setBandwidth(currentBW);
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.printf("⚠️  Error BW: %d\n", state);
+  }
+  
+  state = radio.setCodingRate(currentCR);
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.printf("⚠️  Error CR: %d\n", state);
+  }
+  
   radio.setSyncWord(0x12);
   radio.setOutputPower(17);
   
-  Serial.println("\n📻 Configuración LoRa:");
+  // ✅ CRÍTICO: Esperar a que el radio se estabilice
+  delay(100);
+  
+  Serial.println("📻 Configuración LoRa:");
   Serial.printf("   BW: %.0f kHz\n", currentBW);
   Serial.printf("   SF: %d\n", currentSF);
   Serial.printf("   CR: 4/%d\n", currentCR);
   Serial.printf("   ACK cada: %d fragmentos\n", currentACK);
   Serial.printf("   Delays: ACK=%dms, Proc=%dms\n", getACKDelay(), getProcessingDelay());
+  Serial.println("✅ Radio configurado correctamente\n");
 }
 
 void setupWebServer() {
@@ -331,11 +354,15 @@ void setupWebServer() {
       currentCR = request->getParam("cr")->value().toInt();
       currentACK = request->getParam("ack")->value().toInt();
       
+      // ✅ Aplicar configuración (ya incluye standby)
       applyLoRaConfig();
       
-      radio.standby();
+      // ✅ Reconfigurar interrupción y volver a RX
       radio.setDio1Action(setFlag);
-      radio.startReceive();
+      int state = radio.startReceive();
+      if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("❌ Error startReceive: %d\n", state);
+      }
       
       request->send(200, "text/plain", "OK");
     } else {
