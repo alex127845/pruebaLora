@@ -1,116 +1,392 @@
+/**
+ * ════════════════════════════════════════════════════════════════════════
+ * 📡 File Transfer System RX - Heltec WiFi LoRa 32 V3 (ESP32-S3)
+ * ════════════════════════════════════════════════════════════════════════
+ * 
+ * Sistema completo de gestión y recepción de archivos vía BLE + LoRa
+ * 
+ * MODO: RECEPTOR (RX)
+ * 
+ * Características:
+ * - LittleFS para almacenamiento persistente
+ * - BLE para control desde Android
+ * - LoRa para recepción de archivos desde TX
+ * - Protocolo con ACK para confiabilidad
+ * - Configuración dinámica de parámetros LoRa
+ * - Progress tracking en tiempo real
+ * - Detección automática de transmisiones
+ * - Manejo robusto de errores
+ * 
+ * @author alex127845
+ * @date 2025-01-21
+ * @version 3.0 RX
+ */
+
 #include <Arduino.h>
 #include <RadioLib.h>
 #include <FS.h>
 #include <LittleFS.h>
-#include <BluetoothSerial.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 #include <ArduinoJson.h>
+#include <mbedtls/base64.h>
 
-// Pines Heltec WiFi LoRa 32 V3
+// ════════════════════════════════════════════════════════════════════════
+// 🔧 CONFIGURACIÓN - PINES HELTEC V3
+// ════════════════════════════════════════════════════════════════════════
+
 #define LORA_CS   8
 #define LORA_RST  12
 #define LORA_BUSY 13
 #define LORA_DIO1 14
 
-#define MAX_PACKET_SIZE 250
-#define RX_TIMEOUT 30000
+// ════════════════════════════════════════════════════════════════════════
+// 🔧 CONFIGURACIÓN - BLE
+// ════════════════════════════════════════════════════════════════════════
 
-// MAGIC BYTES para validación de metadatos
-#define METADATA_MAGIC_1 0x4C  // 'L'
-#define METADATA_MAGIC_2 0x4D  // 'M'
+#define DEVICE_NAME "Heltec-RX"
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CMD_WRITE_UUID      "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define DATA_READ_UUID      "beb5483e-36e1-4688-b7f5-ea07361b26a9"
+#define PROGRESS_UUID       "beb5483e-36e1-4688-b7f5-ea07361b26aa"
 
-// Bluetooth Serial
-BluetoothSerial SerialBT;
+// ════════════════════════════════════════════════════════════════════════
+// 🔧 CONFIGURACIÓN - TRANSFERENCIAS
+// ════════════════════════════════════════════════════════════════════════
 
-// Radio LoRa
+#define CHUNK_SIZE_BLE 200         // Chunks para BLE (bytes)
+#define CHUNK_SIZE_LORA 240        // Chunks para LoRa (bytes)
+#define MAX_FILENAME_LENGTH 64
+#define RX_TIMEOUT 30000           // Timeout de recepción (30s)
+#define METADATA_MAGIC_1 0x4C      // Magic byte 1
+#define METADATA_MAGIC_2 0x4D      // Magic byte 2
+
+// ════════════════════════════════════════════════════════════════════════
+// 🌐 VARIABLES GLOBALES - RADIO LORA
+// ════════════════════════════════════════════════════════════════════════
+
 SX1262 radio = new Module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
-// Flags
-volatile bool receivedFlag = false;
-volatile bool transmittingACK = false;
-
-// Variables para archivo actual recibido por LoRa
-String currentFileName = "";
-uint32_t expectedFileSize = 0;
-bool receivingFile = false;
-uint32_t receivedBytes = 0;
-uint16_t lastReceivedIndex = 0xFFFF;
-uint16_t expectedTotalChunks = 0;
-
 // Parámetros LoRa configurables
-float currentBW = 125.0;
-int currentSF = 9;
-int currentCR = 7;
-int currentACK = 5;
+float currentBW = 125.0;           // Bandwidth en kHz
+int currentSF = 9;                 // Spreading Factor
+int currentCR = 7;                 // Coding Rate (4/7)
+int currentACKInterval = 5;        // ACK cada N fragmentos
+int currentPower = 17;             // Potencia en dBm
+
+// Estado de recepción LoRa
+volatile bool packetReceived = false;
+bool receivingFile = false;
+String receivingFileName = "";
+uint32_t receivingFileSize = 0;
+uint32_t receivedBytes = 0;
+uint16_t expectedFragments = 0;
+uint16_t receivedFragments = 0;
+uint16_t lastFragmentIndex = 0;
+File receivingFileHandle;
+unsigned long lastPacketTime = 0;
+unsigned long receptionStartTime = 0;
 
 // Estadísticas
-unsigned long receptionStartTime = 0;
-unsigned long receptionEndTime = 0;
-float lastReceptionTime = 0;
-float lastSpeed = 0;
-uint32_t lastFileSize = 0;
-unsigned long lastPacketTime = 0;
+int16_t avgRSSI = 0;
+float avgSNR = 0;
+int rssiCount = 0;
+uint16_t duplicatePackets = 0;
+
+// ════════════════════════════════════════════════════════════════════════
+// 🌐 VARIABLES GLOBALES - BLE
+// ════════════════════════════════════════════════════════════════════════
+
+BLEServer* pServer = NULL;
+BLECharacteristic* pCmdCharacteristic = NULL;
+BLECharacteristic* pDataCharacteristic = NULL;
+BLECharacteristic* pProgressCharacteristic = NULL;
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+
+// ════════════════════════════════════════════════════════════════════════
+// 🌐 VARIABLES GLOBALES - ESTADO DE TRANSFERENCIA BLE
+// ════════════════════════════════════════════════════════════════════════
+
+enum TransferState {
+  STATE_IDLE,
+  STATE_DOWNLOADING
+};
+
+TransferState currentState = STATE_IDLE;
+String currentFilename = "";
+File currentFile;
+uint32_t expectedFileSize = 0;
+uint32_t transferredBytes = 0;
+
+// ════════════════════════════════════════════════════════════════════════
+// 📝 DECLARACIÓN DE FUNCIONES
+// ════════════════════════════════════════════════════════════════════════
+
+// Setup
+void setupLittleFS();
+void setupBLE();
+void setupLoRa();
+void applyLoRaConfig();
+
+// BLE - Comandos
+void handleCommand(String command);
+void sendResponse(String response);
+void sendProgress(uint8_t percentage);
+
+// BLE - Gestión de archivos
+void listFiles();
+void deleteFile(String filename);
+void startDownload(String filename);
+void sendFileInChunks(String filename);
+
+// LoRa - Configuración
+void setLoRaConfig(String jsonStr);
+void sendCurrentLoRaConfig();
+
+// LoRa - Recepción
+void processLoRaPacket();
+void handleMetadata(uint8_t* data, size_t len);
+void handleDataFragment(uint8_t* data, size_t len);
+void sendACK(uint16_t fragmentIndex);
+void completeReception();
+void cancelReception(String reason);
+
+// Utilidades
+String encodeBase64(uint8_t* data, size_t length);
+size_t decodeBase64(String input, uint8_t* output, size_t maxLen);
+void resetTransferState();
+
+// ════════════════════════════════════════════════════════════════════════
+// 🔌 BLE CALLBACKS
+// ════════════════════════════════════════════════════════════════════════
+
+class ServerCallbacks: public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) {
+    deviceConnected = true;
+    Serial.println("\n✅ Cliente BLE conectado");
+  }
+
+  void onDisconnect(BLEServer* pServer) {
+    deviceConnected = false;
+    Serial.println("\n❌ Cliente BLE desconectado");
+    
+    // Limpiar estado de transferencia BLE
+    if (currentState != STATE_IDLE) {
+      Serial.println("⚠️  Transferencia BLE interrumpida, limpiando...");
+      if (currentFile) currentFile.close();
+      resetTransferState();
+    }
+  }
+};
+
+class CmdCallbacks: public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    uint8_t* pData = pCharacteristic->getData();
+    size_t len = pCharacteristic->getValue().length();
+    
+    if (len > 0 && pData != nullptr) {
+      String command = "";
+      for (size_t i = 0; i < len; i++) {
+        command += (char)pData[i];
+      }
+      command.trim();
+      
+      if (command.length() > 0) {
+        Serial.println("\n📩 Comando BLE recibido: " + command);
+        handleCommand(command);
+      }
+    }
+  }
+};
+
+// ════════════════════════════════════════════════════════════════════════
+// 📡 LORA CALLBACK - Interrupción DIO1
+// ════════════════════════════════════════════════════════════════════════
 
 void IRAM_ATTR setFlag(void) {
-  if (!transmittingACK) {
-    receivedFlag = true;
-  }
+  packetReceived = true;
 }
 
-int getACKDelay() {
-  if (currentBW >= 500.0 && currentSF <= 9) return 150;
-  if (currentBW >= 250.0 && currentSF <= 9) return 180;
-  return 200;
-}
-
-int getProcessingDelay() {
-  if (currentBW >= 500.0 && currentSF <= 7) return 10;
-  if (currentBW >= 250.0 && currentSF <= 9) return 15;
-  return 20;
-}
+// ════════════════════════════════════════════════════════════════════════
+// 🚀 SETUP
+// ════════════════════════════════════════════════════════════════════════
 
 void setup() {
   Serial.begin(115200);
   delay(2000);
   
-  Serial.println("\n=== RECEPTOR LoRa BLUETOOTH v1.0 ===");
+  Serial.println("\n");
+  Serial.println("════════════════════════════════════════════════");
+  Serial.println("  📡 File Transfer System v3.0 RX");
+  Serial.println("  Heltec WiFi LoRa 32 V3");
+  Serial.println("  MODO: RECEPTOR");
+  Serial.println("════════════════════════════════════════════════");
+  Serial.println();
+  
+  setupLittleFS();
+  setupBLE();
+  setupLoRa();
+  
+  Serial.println("\n✅ Sistema RX listo");
+  Serial.println("👂 Esperando conexión BLE...");
+  Serial.println("📡 Radio LoRa en modo escucha continua\n");
+}
 
-  // Inicializar LittleFS
+// ════════════════════════════════════════════════════════════════════════
+// 🔁 LOOP
+// ════════════════════════════════════════════════════════════════════════
+
+void loop() {
+  // Manejar reconexión BLE
+  if (!deviceConnected && oldDeviceConnected) {
+    delay(500);
+    pServer->startAdvertising();
+    Serial.println("🔄 Esperando reconexión BLE...");
+    oldDeviceConnected = deviceConnected;
+  }
+  
+  if (deviceConnected && !oldDeviceConnected) {
+    oldDeviceConnected = deviceConnected;
+  }
+  
+  // Procesar paquetes LoRa recibidos
+  if (packetReceived) {
+    packetReceived = false;
+    processLoRaPacket();
+  }
+  
+  // Timeout de recepción
+  if (receivingFile) {
+    if (millis() - lastPacketTime > RX_TIMEOUT) {
+      Serial.println("\n⏱️  Timeout de recepción");
+      cancelReception("TIMEOUT");
+    }
+  }
+  
+  yield();
+  delay(10);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 💾 LITTLEFS - INICIALIZACIÓN
+// ════════════════════════════════════════════════════════════════════════
+
+void setupLittleFS() {
+  Serial.println("💾 Inicializando LittleFS...");
+  
   if (!LittleFS.begin(true)) {
     Serial.println("❌ Error montando LittleFS");
     while(1) delay(1000);
   }
+  
   Serial.println("✅ LittleFS montado");
-  listFiles();
-
-  // Inicializar Bluetooth Serial
-  Serial.println("\n📱 Iniciando Bluetooth...");
-  if (!SerialBT.begin("LoRa-RX")) {
-    Serial.println("❌ Error iniciando Bluetooth");
-    while(1) delay(1000);
+  
+  uint32_t totalBytes = LittleFS.totalBytes();
+  uint32_t usedBytes = LittleFS.usedBytes();
+  
+  Serial.printf("   Total: %.2f MB\n", totalBytes / 1048576.0);
+  Serial.printf("   Usado: %.2f MB\n", usedBytes / 1048576.0);
+  Serial.printf("   Libre: %.2f MB\n", (totalBytes - usedBytes) / 1048576.0);
+  
+  // Listar archivos
+  Serial.println("\n📁 Archivos:");
+  File root = LittleFS.open("/");
+  File file = root.openNextFile();
+  int count = 0;
+  
+  while (file) {
+    if (!file.isDirectory()) {
+      Serial.printf("   - %s (%.2f KB)\n", file.name(), file.size() / 1024.0);
+      count++;
+    }
+    file = root.openNextFile();
   }
-  Serial.println("✅ Bluetooth iniciado: LoRa-RX");
-  Serial.println("   Visible para emparejamiento");
+  
+  if (count == 0) Serial.println("   (vacío)");
+}
 
-  // Inicializar Radio LoRa
-  Serial.println("\n📡 Iniciando radio SX1262...");
+// ════════════════════════════════════════════════════════════════════════
+// 📡 BLE - INICIALIZACIÓN
+// ════════════════════════════════════════════════════════════════════════
+
+void setupBLE() {
+  Serial.println("\n📡 Inicializando BLE...");
+  
+  BLEDevice::init(DEVICE_NAME);
+  BLEDevice::setMTU(517);
+  
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new ServerCallbacks());
+  
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+  
+  // Característica CMD (WRITE)
+  pCmdCharacteristic = pService->createCharacteristic(
+    CMD_WRITE_UUID,
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
+  );
+  pCmdCharacteristic->setCallbacks(new CmdCallbacks());
+  
+  // Característica DATA (READ/NOTIFY)
+  pDataCharacteristic = pService->createCharacteristic(
+    DATA_READ_UUID,
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+  );
+  pDataCharacteristic->addDescriptor(new BLE2902());
+  
+  // Característica PROGRESS (NOTIFY)
+  pProgressCharacteristic = pService->createCharacteristic(
+    PROGRESS_UUID,
+    BLECharacteristic::PROPERTY_NOTIFY
+  );
+  pProgressCharacteristic->addDescriptor(new BLE2902());
+  
+  pService->start();
+  
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);
+  BLEDevice::startAdvertising();
+  
+  Serial.println("✅ BLE iniciado: " + String(DEVICE_NAME));
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 📡 LORA - INICIALIZACIÓN
+// ════════════════════════════════════════════════════════════════════════
+
+void setupLoRa() {
+  Serial.println("\n📡 Inicializando radio LoRa...");
+  
   int state = radio.begin(915.0);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("❌ Error iniciando SX1262, código: %d\n", state);
     while (true) delay(1000);
   }
   
+  Serial.println("✅ SX1262 inicializado");
+  
   applyLoRaConfig();
+  
+  // Configurar interrupción
   radio.setDio1Action(setFlag);
   
+  // Iniciar recepción continua
   state = radio.startReceive();
-  if (state != RADIOLIB_ERR_NONE) {
-    Serial.printf("❌ Error en startReceive: %d\n", state);
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.println("📻 Radio en modo RX continuo");
+  } else {
+    Serial.printf("❌ Error iniciando RX: %d\n", state);
   }
-
-  Serial.println("✅ Radio configurado");
-  Serial.println("👂 Escuchando paquetes LoRa...");
-  Serial.println("📱 Esperando comandos Bluetooth...\n");
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// 📡 LORA - APLICAR CONFIGURACIÓN
+// ════════════════════════════════════════════════════════════════════════
 
 void applyLoRaConfig() {
   Serial.println("\n📻 Aplicando configuración LoRa...");
@@ -118,497 +394,643 @@ void applyLoRaConfig() {
   radio.standby();
   delay(100);
   
-  int state = radio.setSpreadingFactor(currentSF);
-  if (state != RADIOLIB_ERR_NONE) {
-    Serial.printf("⚠️  Error SF: %d\n", state);
-  }
-  
-  state = radio.setBandwidth(currentBW);
-  if (state != RADIOLIB_ERR_NONE) {
-    Serial.printf("⚠️  Error BW: %d\n", state);
-  }
-  
-  state = radio.setCodingRate(currentCR);
-  if (state != RADIOLIB_ERR_NONE) {
-    Serial.printf("⚠️  Error CR: %d\n", state);
-  }
-  
+  radio.setSpreadingFactor(currentSF);
+  radio.setBandwidth(currentBW);
+  radio.setCodingRate(currentCR);
   radio.setSyncWord(0x12);
-  radio.setOutputPower(17);
+  radio.setOutputPower(currentPower);
+  radio.setCRC(true);
   
   delay(100);
   
-  Serial.println("📻 Configuración LoRa:");
+  Serial.println("📻 Configuración LoRa RX:");
   Serial.printf("   BW: %.0f kHz\n", currentBW);
   Serial.printf("   SF: %d\n", currentSF);
   Serial.printf("   CR: 4/%d\n", currentCR);
-  Serial.printf("   ACK cada: %d fragmentos\n", currentACK);
+  Serial.printf("   Power: %d dBm\n", currentPower);
+  Serial.printf("   ACK cada: %d fragmentos\n", currentACKInterval);
   Serial.println("✅ Configuración aplicada\n");
 }
 
-void loop() {
-  // Manejar comandos Bluetooth
-  handleBluetoothCommands();
-  
-  // Timeout de recepción LoRa
-  if (receivingFile && (millis() - lastPacketTime) > RX_TIMEOUT) {
-    Serial.println("\n⚠️  TIMEOUT LoRa");
-    Serial.printf("   %u/%u bytes (%.1f%%)\n", 
-                  receivedBytes, expectedFileSize, 
-                  (receivedBytes * 100.0) / expectedFileSize);
-    receivingFile = false;
-    
-    // Notificar a la app
-    SerialBT.println("RX_TIMEOUT");
-  }
-  
-  // Procesar paquetes LoRa recibidos
-  if (receivedFlag) {
-    receivedFlag = false;
+// ════════════════════════════════════════════════════════════════════════
+// 🎯 MANEJO DE COMANDOS BLE
+// ════════════════════════════════════════════════════════════════════════
 
-    uint8_t buffer[MAX_PACKET_SIZE];
-    int state = radio.readData(buffer, MAX_PACKET_SIZE);
-
-    if (state == RADIOLIB_ERR_NONE) {
-      size_t packetLen = radio.getPacketLength();
-      lastPacketTime = millis();
-      
-      Serial.printf("📡 RX: %d bytes | RSSI: %.1f | SNR: %.1f\n", 
-                    packetLen, radio.getRSSI(), radio.getSNR());
-      
-      if (packetLen >= 8 && buffer[0] == METADATA_MAGIC_1 && buffer[1] == METADATA_MAGIC_2) {
-        if (!receivingFile) {
-          processMetadata(buffer, packetLen);
-        } else {
-          Serial.println("⚠️  Metadatos durante RX - IGNORANDO");
-        }
-      } else if (packetLen >= 4) {
-        processPacket(buffer, packetLen);
-      }
-    } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
-      Serial.println("❌ CRC Error");
-    }
-
-    delay(getProcessingDelay());
-    receivedFlag = false;
-    radio.startReceive();
-  }
-  
-  yield();
-  delay(10);
-}
-
-// ==================== COMANDOS BLUETOOTH ====================
-
-void handleBluetoothCommands() {
-  if (!SerialBT.available()) return;
-  
-  String command = SerialBT.readStringUntil('\n');
+void handleCommand(String command) {
   command.trim();
   
-  Serial.println("📱 Comando BT: " + command);
-  
-  // GET_CONFIG - Obtener configuración actual
-  if (command == "GET_CONFIG") {
-    sendCurrentConfig();
+  // Comando: LIST
+  if (command == "CMD:LIST") {
+    Serial.println("📋 Procesando: LIST");
+    listFiles();
   }
   
-  // SET_CONFIG:{json} - Configurar parámetros LoRa
-  else if (command.startsWith("SET_CONFIG:")) {
-    String jsonStr = command.substring(11);
-    setConfigFromJSON(jsonStr);
-  }
-  
-  // GET_FILES - Listar archivos recibidos
-  else if (command == "GET_FILES") {
-    sendFileList();
-  }
-  
-  // DOWNLOAD_FILE:filename - Enviar archivo por Bluetooth
-  else if (command.startsWith("DOWNLOAD_FILE:")) {
-    String filename = command.substring(14);
-    sendFileViaBluetooth(filename);
-  }
-  
-  // DELETE_FILE:filename - Eliminar archivo
-  else if (command.startsWith("DELETE_FILE:")) {
-    String filename = command.substring(12);
+  // Comando: DELETE:filename
+  else if (command.startsWith("CMD:DELETE:")) {
+    String filename = command.substring(11);
+    Serial.println("🗑️  Procesando: DELETE - " + filename);
     deleteFile(filename);
   }
   
-  // GET_STATUS - Estado del sistema
-  else if (command == "GET_STATUS") {
-    sendStatus();
+  // Comando: DOWNLOAD:filename
+  else if (command.startsWith("CMD:DOWNLOAD:")) {
+    String filename = command.substring(13);
+    Serial.println("📥 Procesando: DOWNLOAD - " + filename);
+    startDownload(filename);
   }
   
+  // Comando: SET_LORA_CONFIG
+  else if (command.startsWith("CMD:SET_LORA_CONFIG:")) {
+    String jsonStr = command.substring(20);
+    Serial.println("⚙️  Procesando: SET_LORA_CONFIG");
+    setLoRaConfig(jsonStr);
+  }
+  
+  // Comando: GET_LORA_CONFIG
+  else if (command == "CMD:GET_LORA_CONFIG") {
+    Serial.println("⚙️  Procesando: GET_LORA_CONFIG");
+    sendCurrentLoRaConfig();
+  }
+  
+  // Comando: PING
+  else if (command == "CMD:PING") {
+    Serial.println("🏓 Procesando: PING");
+    sendResponse("PONG");
+  }
+  
+  // Comando desconocido
   else {
-    SerialBT.println("ERROR:UNKNOWN_COMMAND");
+    Serial.println("⚠️  Comando desconocido: " + command);
+    sendResponse("ERROR:UNKNOWN_COMMAND");
   }
 }
 
-// Enviar configuración actual
-void sendCurrentConfig() {
-  StaticJsonDocument<200> doc;
-  doc["bw"] = (int)currentBW;
-  doc["sf"] = currentSF;
-  doc["cr"] = currentCR;
-  doc["ack"] = currentACK;
+// ════════════════════════════════════════════════════════════════════════
+// 📤 ENVIAR RESPUESTA BLE
+// ════════════════════════════════════════════════════════════════════════
+
+void sendResponse(String response) {
+  if (!deviceConnected || pDataCharacteristic == NULL) return;
   
-  String json;
-  serializeJson(doc, json);
-  
-  SerialBT.println(json);
-  Serial.println("✅ Config enviada: " + json);
+  response += "\n";
+  pDataCharacteristic->setValue(response.c_str());
+  pDataCharacteristic->notify();
+  delay(10);
 }
 
-// Configurar desde JSON
-void setConfigFromJSON(String jsonStr) {
-  StaticJsonDocument<200> doc;
-  DeserializationError error = deserializeJson(doc, jsonStr);
+// ════════════════════════════════════════════════════════════════════════
+// 📊 ENVIAR PROGRESO BLE
+// ════════════════════════════════════════════════════════════════════════
+
+void sendProgress(uint8_t percentage) {
+  if (!deviceConnected || pProgressCharacteristic == NULL) return;
   
-  if (error) {
-    SerialBT.println("ERROR:INVALID_JSON");
-    Serial.println("❌ JSON inválido");
-    return;
-  }
-  
-  if (receivingFile) {
-    SerialBT.println("ERROR:RECEIVING");
-    Serial.println("⚠️  No cambiar config durante RX");
-    return;
-  }
-  
-  currentBW = doc["bw"];
-  currentSF = doc["sf"];
-  currentCR = doc["cr"];
-  currentACK = doc["ack"];
-  
-  applyLoRaConfig();
-  
-  // Reconfigurar interrupción y volver a RX
-  radio.setDio1Action(setFlag);
-  int state = radio.startReceive();
-  if (state != RADIOLIB_ERR_NONE) {
-    Serial.printf("❌ Error startReceive: %d\n", state);
-    SerialBT.println("ERROR:CANT_START_RX");
-    return;
-  }
-  
-  SerialBT.println("OK");
-  Serial.println("✅ Configuración actualizada");
+  uint8_t data[1] = { percentage };
+  pProgressCharacteristic->setValue(data, 1);
+  pProgressCharacteristic->notify();
+  delay(5);
 }
 
-// Enviar lista de archivos
-void sendFileList() {
-  SerialBT.println("[FILES_START]");
-  
-  File root = LittleFS.open("/");
-  File file = root.openNextFile();
-  
-  while (file) {
-    if (!file.isDirectory()) {
-      String filename = String(file.name());
-      if (filename.startsWith("/")) filename = filename.substring(1);
-      
-      SerialBT.printf("%s,%d\n", filename.c_str(), file.size());
-    }
-    file = root.openNextFile();
-  }
-  
-  SerialBT.println("[FILES_END]");
-  Serial.println("✅ Lista de archivos enviada");
-}
-
-// Enviar archivo por Bluetooth a la app
-void sendFileViaBluetooth(String filename) {
-  if (!filename.startsWith("/")) filename = "/" + filename;
-  
-  if (!LittleFS.exists(filename)) {
-    SerialBT.println("ERROR:FILE_NOT_FOUND");
-    Serial.println("❌ Archivo no existe");
-    return;
-  }
-  
-  File file = LittleFS.open(filename, "r");
-  if (!file) {
-    SerialBT.println("ERROR:CANT_OPEN_FILE");
-    Serial.println("❌ No se pudo abrir archivo");
-    return;
-  }
-  
-  uint32_t fileSize = file.size();
-  String displayName = filename;
-  if (displayName.startsWith("/")) displayName = displayName.substring(1);
-  
-  // Enviar header
-  SerialBT.printf("[FILE_START:%s:%u]\n", displayName.c_str(), fileSize);
-  Serial.printf("📤 Enviando archivo: %s (%u bytes)\n", displayName.c_str(), fileSize);
-  
-  // Enviar datos en chunks
-  uint8_t buffer[512];
-  size_t totalSent = 0;
-  
-  while (file.available()) {
-    size_t bytesRead = file.read(buffer, sizeof(buffer));
-    SerialBT.write(buffer, bytesRead);
-    totalSent += bytesRead;
-    
-    Serial.printf("   Enviado: %u/%u bytes (%.1f%%)\r", 
-                  totalSent, fileSize, (totalSent * 100.0) / fileSize);
-    
-    delay(10); // Pequeña pausa para no saturar
-  }
-  
-  Serial.println();
-  file.close();
-  
-  // Enviar fin
-  SerialBT.println("[FILE_END]");
-  Serial.println("✅ Archivo enviado completamente");
-}
-
-// Eliminar archivo
-void deleteFile(String filename) {
-  if (!filename.startsWith("/")) filename = "/" + filename;
-  
-  if (LittleFS.remove(filename)) {
-    SerialBT.println("OK");
-    Serial.println("🗑️  Archivo eliminado: " + filename);
-  } else {
-    SerialBT.println("ERROR:CANT_DELETE");
-    Serial.println("❌ Error eliminando archivo");
-  }
-}
-
-// Enviar estado del sistema
-void sendStatus() {
-  StaticJsonDocument<300> doc;
-  doc["receivingFile"] = receivingFile;
-  doc["currentFile"] = currentFileName;
-  doc["progress"] = receivingFile ? (receivedBytes * 100.0) / expectedFileSize : 0;
-  doc["connected"] = SerialBT.hasClient();
-  doc["freeSpace"] = LittleFS.totalBytes() - LittleFS.usedBytes();
-  doc["totalSpace"] = LittleFS.totalBytes();
-  
-  String json;
-  serializeJson(doc, json);
-  
-  SerialBT.println(json);
-}
-
-// ==================== RECEPCIÓN LoRa ====================
-
-void processMetadata(uint8_t* data, size_t len) {
-  if (len < 8) return;
-  if (data[0] != METADATA_MAGIC_1 || data[1] != METADATA_MAGIC_2) return;
-  
-  receptionStartTime = millis();
-  lastPacketTime = millis();
-  
-  memcpy(&expectedFileSize, data + 2, 4);
-  
-  if (expectedFileSize == 0 || expectedFileSize > 10485760) {
-    Serial.printf("⚠️  Tamaño inválido: %u\n", expectedFileSize);
-    return;
-  }
-  
-  uint8_t nameLen = data[6];
-  if (nameLen == 0 || nameLen > 100 || len < (7 + nameLen)) return;
-  
-  char nameBuf[101];
-  memcpy(nameBuf, data + 7, nameLen);
-  nameBuf[nameLen] = '\0';
-  
-  bool validName = true;
-  for (int i = 0; i < nameLen; i++) {
-    if (nameBuf[i] < 32 || nameBuf[i] > 126) {
-      if (nameBuf[i] != '.') {
-        validName = false;
-        break;
-      }
-    }
-  }
-  
-  if (!validName) return;
-  
-  currentFileName = String(nameBuf);
-  if (!currentFileName.startsWith("/")) currentFileName = "/" + currentFileName;
-  
-  Serial.println("\n📋 METADATOS RECIBIDOS:");
-  Serial.printf("   📁 %s (%u bytes)\n", currentFileName.c_str(), expectedFileSize);
-  Serial.printf("   📻 BW=%.0f, SF=%d, CR=4/%d, ACK=%d\n", currentBW, currentSF, currentCR, currentACK);
-  
-  // Eliminar si existe
-  if (LittleFS.exists(currentFileName)) {
-    LittleFS.remove(currentFileName);
-  }
-  
-  receivingFile = true;
-  receivedBytes = 0;
-  lastReceivedIndex = 0xFFFF;
-  expectedTotalChunks = 0;
-  
-  Serial.println("   ✅ Listo para recibir datos\n");
-  
-  // Notificar a la app
-  String displayName = currentFileName;
-  if (displayName.startsWith("/")) displayName = displayName.substring(1);
-  SerialBT.printf("RX_START:%s:%u\n", displayName.c_str(), expectedFileSize);
-}
-
-void processPacket(uint8_t* data, size_t len) {
-  if (!receivingFile || currentFileName == "") {
-    Serial.println("⚠️  Datos sin metadatos");
-    return;
-  }
-  
-  uint16_t index, total;
-  memcpy(&index, data, 2);
-  memcpy(&total, data + 2, 2);
-
-  if (index >= 1000 || total == 0 || total >= 1000) return;
-  
-  if (expectedTotalChunks == 0) {
-    expectedTotalChunks = total;
-  } else if (expectedTotalChunks != total) {
-    Serial.printf("⚠️  Total inconsistente\n");
-    return;
-  }
-
-  int dataLen = len - 4;
-  Serial.printf("📦 [%u/%u] %d bytes\n", index + 1, total, dataLen);
-
-  // Manejar duplicados
-  if (index == lastReceivedIndex) {
-    Serial.println("   ⚠️  Duplicado");
-    bool isMultipleOfACK = ((index + 1) % currentACK == 0);
-    bool isLastFragment = (index + 1 == total);
-    if (isMultipleOfACK || isLastFragment) {
-      delay(getACKDelay());
-      sendAck(index);
-    }
-    return;
-  }
-  
-  lastReceivedIndex = index;
-
-  // Escribir datos al archivo
-  const char* mode = (index == 0) ? "w" : "a";
-  File file = LittleFS.open(currentFileName, mode);
-  if (!file) {
-    Serial.println("❌ Error abriendo archivo");
-    return;
-  }
-  
-  size_t written = file.write(data + 4, dataLen);
-  file.close();
-
-  if (written == dataLen) {
-    receivedBytes += dataLen;
-    float progress = (receivedBytes * 100.0) / expectedFileSize;
-    Serial.printf("✅ OK (%u/%u - %.1f%%)\n", receivedBytes, expectedFileSize, progress);
-    
-    // Notificar progreso a la app
-    SerialBT.printf("RX_PROGRESS:%u:%u\n", receivedBytes, expectedFileSize);
-  }
-
-  bool isLastFragment = (index + 1 == total);
-  bool isMultipleOfACK = ((index + 1) % currentACK == 0);
-  
-  // Enviar ACK si corresponde
-  if (isMultipleOfACK || isLastFragment) {
-    delay(getACKDelay());
-    sendAck(index);
-  }
-
-  // Si es el último fragmento
-  if (isLastFragment) {
-    receptionEndTime = millis();
-    lastReceptionTime = (receptionEndTime - receptionStartTime) / 1000.0;
-    delay(200);
-    showReceivedFile();
-    receivingFile = false;
-    receivedBytes = 0;
-    lastReceivedIndex = 0xFFFF;
-    expectedTotalChunks = 0;
-    
-    // Notificar a la app
-    SerialBT.printf("RX_COMPLETE:%s:%u:%.2f\n", 
-                    currentFileName.c_str(), lastFileSize, lastSpeed);
-  }
-}
-
-void sendAck(uint16_t index) {
-  transmittingACK = true;
-  
-  uint8_t ackPacket[5] = {'A', 'C', 'K'};
-  uint16_t fragmentNumber = index + 1;
-  memcpy(ackPacket + 3, &fragmentNumber, 2);
-  
-  Serial.printf("📤 ACK[%u]... ", fragmentNumber);
-  
-  radio.standby();
-  int state = radio.transmit(ackPacket, sizeof(ackPacket));
-  
-  if (state == RADIOLIB_ERR_NONE) {
-    Serial.println("✅");
-  } else {
-    Serial.printf("❌ %d\n", state);
-  }
-  
-  delay(50);
-  radio.startReceive();
-  transmittingACK = false;
-  Serial.println();
-}
-
-void showReceivedFile() {
-  Serial.println("\n🎉 ¡RECEPCIÓN COMPLETA!\n");
-  
-  File recibido = LittleFS.open(currentFileName, "r");
-  if (!recibido) {
-    Serial.println("❌ No se pudo abrir archivo");
-    return;
-  }
-  
-  lastFileSize = recibido.size();
-  lastSpeed = (lastFileSize * 8.0) / (lastReceptionTime * 1000.0);
-  
-  Serial.printf("📁 %s\n", currentFileName.c_str());
-  Serial.printf("📊 Tamaño: %u bytes\n", lastFileSize);
-  Serial.printf("⏱️  Tiempo: %.2f s\n", lastReceptionTime);
-  Serial.println("╔════════════════════════════════╗");
-  Serial.printf("║  ⚡ VELOCIDAD: %.2f kbps      ║\n", lastSpeed);
-  Serial.println("╚════════════════════════════════╝");
-  
-  if (lastFileSize != expectedFileSize) {
-    Serial.printf("⚠️  Faltan %d bytes\n", expectedFileSize - lastFileSize);
-  } else {
-    Serial.println("✅ Integridad OK");
-  }
-  
-  Serial.println();
-  recibido.close();
-  
-  listFiles();
-}
-
-// ==================== UTILIDADES ====================
+// ════════════════════════════════════════════════════════════════════════
+// 📋 LISTAR ARCHIVOS
+// ════════════════════════════════════════════════════════════════════════
 
 void listFiles() {
-  Serial.println("\n📁 Archivos en LittleFS:");
+  sendResponse("FILES_START");
+  
   File root = LittleFS.open("/");
   File file = root.openNextFile();
   int count = 0;
   
   while (file) {
     if (!file.isDirectory()) {
-      Serial.printf("  - %s (%d bytes)\n", file.name(), file.size());
+      String filename = String(file.name());
+      if (filename.startsWith("/")) filename = filename.substring(1);
+      
+      String fileInfo = "FILE:" + filename + ":" + String(file.size());
+      sendResponse(fileInfo);
       count++;
     }
     file = root.openNextFile();
   }
   
-  if (count == 0) Serial.println("  (vacío)");
-  Serial.println();
+  sendResponse("FILES_END:" + String(count));
+  Serial.printf("✅ Lista enviada: %d archivo(s)\n", count);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 🗑️  ELIMINAR ARCHIVO
+// ════════════════════════════════════════════════════════════════════════
+
+void deleteFile(String filename) {
+  if (!filename.startsWith("/")) filename = "/" + filename;
+  
+  if (!LittleFS.exists(filename)) {
+    sendResponse("ERROR:FILE_NOT_FOUND");
+    return;
+  }
+  
+  if (receivingFile && receivingFileName == filename) {
+    sendResponse("ERROR:FILE_IN_USE");
+    return;
+  }
+  
+  if (currentState != STATE_IDLE && currentFilename == filename) {
+    sendResponse("ERROR:FILE_IN_USE");
+    return;
+  }
+  
+  delay(100);
+  
+  if (LittleFS.remove(filename)) {
+    Serial.println("✅ Eliminado: " + filename);
+    sendResponse("OK:DELETED");
+  } else {
+    Serial.println("❌ Error eliminando");
+    sendResponse("ERROR:CANT_DELETE");
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 📥 DOWNLOAD BLE - INICIAR
+// ════════════════════════════════════════════════════════════════════════
+
+void startDownload(String filename) {
+  if (currentState != STATE_IDLE) {
+    sendResponse("ERROR:TRANSFER_IN_PROGRESS");
+    return;
+  }
+  
+  if (!filename.startsWith("/")) filename = "/" + filename;
+  
+  if (!LittleFS.exists(filename)) {
+    sendResponse("ERROR:FILE_NOT_FOUND");
+    return;
+  }
+  
+  File file = LittleFS.open(filename, "r");
+  if (!file) {
+    sendResponse("ERROR:OPEN_FAILED");
+    return;
+  }
+  
+  uint32_t fileSize = file.size();
+  file.close();
+  
+  currentState = STATE_DOWNLOADING;
+  currentFilename = filename;
+  expectedFileSize = fileSize;
+  transferredBytes = 0;
+  
+  String cleanName = filename;
+  if (cleanName.startsWith("/")) cleanName = cleanName.substring(1);
+  
+  sendResponse("DOWNLOAD_START:" + cleanName + ":" + String(fileSize));
+  delay(100);
+  
+  sendFileInChunks(filename);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 📤 DOWNLOAD BLE - ENVIAR EN CHUNKS
+// ════════════════════════════════════════════════════════════════════════
+
+void sendFileInChunks(String filename) {
+  File file = LittleFS.open(filename, "r");
+  if (!file) {
+    sendResponse("ERROR:FILE_OPEN_FAILED");
+    resetTransferState();
+    return;
+  }
+  
+  uint32_t totalSize = file.size();
+  uint16_t totalChunks = (totalSize + CHUNK_SIZE_BLE - 1) / CHUNK_SIZE_BLE;
+  uint16_t chunkNum = 0;
+  
+  sendProgress(0);
+  
+  uint8_t buffer[CHUNK_SIZE_BLE];
+  
+  while (file.available()) {
+    size_t bytesRead = file.read(buffer, CHUNK_SIZE_BLE);
+    if (bytesRead == 0) break;
+    
+    String encoded = encodeBase64(buffer, bytesRead);
+    String chunkMsg = "CHUNK:" + String(chunkNum) + ":" + encoded;
+    sendResponse(chunkMsg);
+    
+    transferredBytes += bytesRead;
+    chunkNum++;
+    
+    uint8_t progress = (transferredBytes * 100) / totalSize;
+    if (chunkNum % 5 == 0 || chunkNum >= totalChunks) {
+      sendProgress(progress);
+    }
+    
+    delay(20);
+  }
+  
+  file.close();
+  
+  sendResponse("DOWNLOAD_END:" + String(transferredBytes));
+  sendProgress(100);
+  
+  Serial.printf("✅ Download BLE completo: %u bytes\n", transferredBytes);
+  
+  resetTransferState();
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// ⚙️  CONFIGURACIÓN LORA - SET
+// ════════════════════════════════════════════════════════════════════════
+
+void setLoRaConfig(String jsonStr) {
+  StaticJsonDocument<200> doc;
+  DeserializationError error = deserializeJson(doc, jsonStr);
+  
+  if (error) {
+    sendResponse("ERROR:INVALID_JSON");
+    return;
+  }
+  
+  if (receivingFile) {
+    sendResponse("ERROR:RECEIVING");
+    return;
+  }
+  
+  currentBW = doc["bw"];
+  currentSF = doc["sf"];
+  currentCR = doc["cr"];
+  currentACKInterval = doc["ack"];
+  currentPower = doc["power"];
+  
+  applyLoRaConfig();
+  
+  // Reiniciar recepción
+  radio.setDio1Action(setFlag);
+  radio.startReceive();
+  
+  sendResponse("OK:LORA_CONFIG_SET");
+  Serial.println("✅ Configuración LoRa actualizada");
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// ⚙️  CONFIGURACIÓN LORA - GET
+// ════════════════════════════════════════════════════════════════════════
+
+void sendCurrentLoRaConfig() {
+  StaticJsonDocument<200> doc;
+  doc["bw"] = (int)currentBW;
+  doc["sf"] = currentSF;
+  doc["cr"] = currentCR;
+  doc["ack"] = currentACKInterval;
+  doc["power"] = currentPower;
+  
+  String json;
+  serializeJson(doc, json);
+  
+  sendResponse("LORA_CONFIG:" + json);
+  Serial.println("✅ Config LoRa enviada");
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 📡 LORA RX - PROCESAR PAQUETE
+// ════════════════════════════════════════════════════════════════════════
+
+void processLoRaPacket() {
+  uint8_t buffer[256];
+  
+  int state = radio.readData(buffer, sizeof(buffer));
+  
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.printf("⚠️  Error leyendo paquete: %d\n", state);
+    radio.startReceive();
+    return;
+  }
+  
+  size_t len = radio.getPacketLength();
+  
+  // Obtener RSSI y SNR
+  int16_t rssi = radio.getRSSI();
+  float snr = radio.getSNR();
+  
+  // Actualizar estadísticas
+  avgRSSI = (avgRSSI * rssiCount + rssi) / (rssiCount + 1);
+  avgSNR = (avgSNR * rssiCount + snr) / (rssiCount + 1);
+  rssiCount++;
+  
+  lastPacketTime = millis();
+  
+  // Detectar tipo de paquete
+  
+  // METADATA (magic bytes 0x4C, 0x4D)
+  if (len >= 7 && buffer[0] == METADATA_MAGIC_1 && buffer[1] == METADATA_MAGIC_2) {
+    handleMetadata(buffer, len);
+  }
+  // FRAGMENTO DE DATOS (índice + total + datos)
+  else if (len > 4) {
+    handleDataFragment(buffer, len);
+  }
+  
+  // Reiniciar recepción
+  radio.startReceive();
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 📡 LORA RX - MANEJAR METADATA
+// ════════════════════════════════════════════════════════════════════════
+
+void handleMetadata(uint8_t* data, size_t len) {
+  Serial.println("\n📦 METADATA recibido");
+  
+  // Si ya estaba recibiendo, cancelar recepción anterior
+  if (receivingFile) {
+    Serial.println("⚠️  Cancelando recepción anterior");
+    cancelReception("NEW_TRANSFER");
+  }
+  
+  // Extraer información
+  uint32_t fileSize;
+  memcpy(&fileSize, data + 2, 4);
+  
+  uint8_t nameLen = data[6];
+  if (nameLen > 100) nameLen = 100;
+  
+  char fileName[101];
+  memcpy(fileName, data + 7, nameLen);
+  fileName[nameLen] = '\0';
+  
+  Serial.printf("📄 Archivo: %s\n", fileName);
+  Serial.printf("📊 Tamaño: %u bytes\n", fileSize);
+  Serial.printf("📶 RSSI: %d dBm, SNR: %.2f dB\n", radio.getRSSI(), radio.getSNR());
+  
+  // Verificar espacio disponible
+  uint32_t freeSpace = LittleFS.totalBytes() - LittleFS.usedBytes();
+  if (fileSize > freeSpace) {
+    Serial.printf("❌ Espacio insuficiente (libre: %u, necesario: %u)\n", 
+                 freeSpace, fileSize);
+    sendResponse("RX_FAILED:NO_SPACE");
+    return;
+  }
+  
+  // Preparar recepción
+  receivingFileName = "/" + String(fileName);
+  receivingFileSize = fileSize;
+  receivedBytes = 0;
+  receivedFragments = 0;
+  lastFragmentIndex = 0;
+  duplicatePackets = 0;
+  rssiCount = 0;
+  avgRSSI = 0;
+  avgSNR = 0;
+  
+  expectedFragments = (fileSize + CHUNK_SIZE_LORA - 1) / CHUNK_SIZE_LORA;
+  
+  // Eliminar archivo si existe
+  if (LittleFS.exists(receivingFileName)) {
+    LittleFS.remove(receivingFileName);
+  }
+  
+  // Crear archivo
+  receivingFileHandle = LittleFS.open(receivingFileName, "w");
+  
+  if (!receivingFileHandle) {
+    Serial.println("❌ Error creando archivo");
+    sendResponse("RX_FAILED:CANT_CREATE");
+    return;
+  }
+  
+  receivingFile = true;
+  receptionStartTime = millis();
+  lastPacketTime = millis();
+  
+  Serial.printf("✅ Listo para recibir %u fragmentos\n", expectedFragments);
+  
+  sendResponse("RX_START:" + String(fileName) + ":" + String(fileSize));
+  sendProgress(0);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 📡 LORA RX - MANEJAR FRAGMENTO DE DATOS
+// ════════════════════════════════════════════════════════════════════════
+
+void handleDataFragment(uint8_t* data, size_t len) {
+  if (!receivingFile) return;
+  
+  // Extraer índice y total
+  uint16_t fragmentIndex;
+  uint16_t totalFragments;
+  
+  memcpy(&fragmentIndex, data, 2);
+  memcpy(&totalFragments, data + 2, 2);
+  
+  // Validar
+  if (totalFragments != expectedFragments) {
+    Serial.printf("⚠️  Total fragmentos no coincide: esperado %u, recibido %u\n", 
+                 expectedFragments, totalFragments);
+    return;
+  }
+  
+  // Detectar duplicado
+  if (fragmentIndex < lastFragmentIndex) {
+    duplicatePackets++;
+    Serial.printf("⚠️  Fragmento duplicado: %u (ignorando)\n", fragmentIndex);
+    return;
+  }
+  
+  // Escribir datos
+  size_t dataLen = len - 4;
+  size_t written = receivingFileHandle.write(data + 4, dataLen);
+  
+  if (written != dataLen) {
+    Serial.println("❌ Error escribiendo fragmento");
+    cancelReception("WRITE_ERROR");
+    return;
+  }
+  
+  receivedBytes += written;
+  receivedFragments++;
+  lastFragmentIndex = fragmentIndex;
+  
+  // Calcular progreso
+  uint8_t progress = (receivedBytes * 100) / receivingFileSize;
+  
+  // Log cada 10 fragmentos
+  if (receivedFragments % 10 == 0 || receivedFragments >= expectedFragments) {
+    Serial.printf("📦 Fragmento %u/%u (%.1f%%) - %u bytes\n", 
+                 receivedFragments, expectedFragments, progress, receivedBytes);
+    
+    sendProgress(progress);
+    
+    String status = "RX_STATUS:" + String(receivedFragments) + "/" + 
+                   String(expectedFragments) + ":" + String(receivedBytes);
+    sendResponse(status);
+  }
+  
+  // Enviar ACK si es necesario
+  bool isLast = (fragmentIndex + 1 == expectedFragments);
+  bool needACK = ((fragmentIndex + 1) % currentACKInterval == 0);
+  
+  if (needACK || isLast) {
+    sendACK(fragmentIndex + 1);
+  }
+  
+  // ¿Recepción completa?
+  if (receivedFragments >= expectedFragments) {
+    completeReception();
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 📡 LORA RX - ENVIAR ACK
+// ════════════════════════════════════════════════════════════════════════
+
+void sendACK(uint16_t fragmentIndex) {
+  uint8_t ackPacket[5];
+  ackPacket[0] = 'A';
+  ackPacket[1] = 'C';
+  ackPacket[2] = 'K';
+  memcpy(ackPacket + 3, &fragmentIndex, 2);
+  
+  radio.standby();
+  int state = radio.transmit(ackPacket, 5);
+  
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.printf("✅ ACK %u enviado\n", fragmentIndex);
+  } else {
+    Serial.printf("⚠️  Error enviando ACK: %d\n", state);
+  }
+  
+  radio.startReceive();
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 📡 LORA RX - COMPLETAR RECEPCIÓN
+// ════════════════════════════════════════════════════════════════════════
+
+void completeReception() {
+  receivingFileHandle.flush();
+  receivingFileHandle.close();
+  
+  float receptionTime = (millis() - receptionStartTime) / 1000.0;
+  float speed = (receivingFileSize * 8.0) / (receptionTime * 1000.0);
+  
+  // Verificar tamaño
+  File checkFile = LittleFS.open(receivingFileName, "r");
+  size_t actualSize = checkFile ? checkFile.size() : 0;
+  if (checkFile) checkFile.close();
+  
+  Serial.println("\n✅ Recepción LoRa completada");
+  Serial.printf("📄 Archivo: %s\n", receivingFileName.c_str());
+  Serial.printf("📊 Tamaño esperado: %u bytes\n", receivingFileSize);
+  Serial.printf("📊 Tamaño real: %u bytes\n", actualSize);
+  Serial.printf("⏱️  Tiempo: %.2f s\n", receptionTime);
+  Serial.printf("⚡ Velocidad: %.2f kbps\n", speed);
+  Serial.printf("📦 Fragmentos: %u/%u\n", receivedFragments, expectedFragments);
+  Serial.printf("🔄 Duplicados: %u\n", duplicatePackets);
+  Serial.printf("📶 RSSI promedio: %d dBm\n", avgRSSI);
+  Serial.printf("📶 SNR promedio: %.2f dB\n", avgSNR);
+  
+  String cleanName = receivingFileName;
+  if (cleanName.startsWith("/")) cleanName = cleanName.substring(1);
+  
+  if (actualSize == receivingFileSize) {
+    String status = "RX_COMPLETE:" + cleanName + ":" + 
+                   String(actualSize) + ":" + String(receptionTime, 2);
+    sendResponse(status);
+    sendProgress(100);
+  } else {
+    Serial.println("⚠️  Advertencia: Tamaño no coincide");
+    sendResponse("RX_COMPLETE:SIZE_MISMATCH:" + cleanName);
+  }
+  
+  // Resetear estado
+  receivingFile = false;
+  receivingFileName = "";
+  receivingFileSize = 0;
+  receivedBytes = 0;
+  receivedFragments = 0;
+  lastFragmentIndex = 0;
+  
+  Serial.println("👂 Esperando nueva transmisión...\n");
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 📡 LORA RX - CANCELAR RECEPCIÓN
+// ════════════════════════════════════════════════════════════════════════
+
+void cancelReception(String reason) {
+  Serial.println("❌ Cancelando recepción: " + reason);
+  
+  if (receivingFileHandle) {
+    receivingFileHandle.close();
+  }
+  
+  if (LittleFS.exists(receivingFileName)) {
+    LittleFS.remove(receivingFileName);
+    Serial.println("🗑️  Archivo incompleto eliminado");
+  }
+  
+  sendResponse("RX_FAILED:" + reason);
+  sendProgress(0);
+  
+  receivingFile = false;
+  receivingFileName = "";
+  receivingFileSize = 0;
+  receivedBytes = 0;
+  receivedFragments = 0;
+  lastFragmentIndex = 0;
+  
+  Serial.println("👂 Esperando nueva transmisión...\n");
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 🔐 BASE64 - CODIFICACIÓN
+// ════════════════════════════════════════════════════════════════════════
+
+String encodeBase64(uint8_t* data, size_t length) {
+  size_t outputLen;
+  mbedtls_base64_encode(NULL, 0, &outputLen, data, length);
+  
+  uint8_t* encoded = (uint8_t*)malloc(outputLen + 1);
+  mbedtls_base64_encode(encoded, outputLen + 1, &outputLen, data, length);
+  encoded[outputLen] = '\0';
+  
+  String result = String((char*)encoded);
+  free(encoded);
+  
+  return result;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 🔐 BASE64 - DECODIFICACIÓN
+// ════════════════════════════════════════════════════════════════════════
+
+size_t decodeBase64(String input, uint8_t* output, size_t maxLen) {
+  size_t outputLen;
+  
+  int ret = mbedtls_base64_decode(
+    output, 
+    maxLen, 
+    &outputLen, 
+    (const unsigned char*)input.c_str(), 
+    input.length()
+  );
+  
+  if (ret != 0) return 0;
+  
+  return outputLen;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 🔄 RESETEAR ESTADO DE TRANSFERENCIA BLE
+// ════════════════════════════════════════════════════════════════════════
+
+void resetTransferState() {
+  if (currentFile) currentFile.close();
+  
+  currentState = STATE_IDLE;
+  currentFilename = "";
+  expectedFileSize = 0;
+  transferredBytes = 0;
 }

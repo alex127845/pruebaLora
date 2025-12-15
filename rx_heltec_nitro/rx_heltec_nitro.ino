@@ -18,6 +18,9 @@
 #define METADATA_MAGIC_1 0x4C  // 'L'
 #define METADATA_MAGIC_2 0x4D  // 'M'
 
+#define VEXT 36
+#define VEXT_ON LOW
+
 const char* ssid = "LoRa-Gateway";
 const char* password = "12345678";
 
@@ -49,6 +52,11 @@ float lastSpeed = 0;              // ✅ Velocidad en kbps
 uint32_t lastFileSize = 0;        // ✅ Tamaño del último archivo
 unsigned long lastPacketTime = 0;
 
+
+void enableVext(bool on) {
+  pinMode(VEXT, OUTPUT);
+  digitalWrite(VEXT, on ? VEXT_ON : !VEXT_ON);
+}
 void IRAM_ATTR setFlag(void) {
   if (!transmittingACK) {
     receivedFlag = true;
@@ -106,6 +114,8 @@ void setup() {
   setupWebServer();
 
   Serial.println("Iniciando radio SX1262...");
+  enableVext(true);
+  delay(200);
   int state = radio.begin(915.0);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("❌ Error iniciando SX1262, código: %d\n", state);

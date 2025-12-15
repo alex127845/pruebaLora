@@ -16,6 +16,8 @@
 #define MAX_RETRIES 3            // ✅ Reducido de 5 a 3
 #define METADATA_MAGIC_1 0x4C
 #define METADATA_MAGIC_2 0x4D
+#define VEXT 36
+#define VEXT_ON LOW
 
 const char* ssid = "LoRa-TX";
 const char* password = "12345678";
@@ -43,6 +45,12 @@ uint32_t lastFileSize = 0;           // ✅ Tamaño del último archivo
 float lastSpeed = 0;                 // ✅ Velocidad en kbps
 uint16_t totalPacketsSent = 0;
 uint16_t totalRetries = 0;
+
+
+void enableVext(bool on) {
+  pinMode(VEXT, OUTPUT);
+  digitalWrite(VEXT, on ? VEXT_ON : !VEXT_ON);
+}
 
 void IRAM_ATTR setFlag(void) {
   if (receivingACK) {
@@ -96,6 +104,8 @@ void setup() {
   setupWebServer();
 
   Serial.println("Iniciando radio...");
+  enableVext(true);
+  delay(200);
   int state = radio.begin(915.0);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("❌ Error iniciando SX1262, código: %d\n", state);
