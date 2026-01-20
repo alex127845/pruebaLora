@@ -121,7 +121,7 @@ void setup() {
   Serial.println("Iniciando radio...");
   enableVext(true);
   delay(200);
-  int state = radio.begin(915. 0);
+  int state = radio.begin(915.0);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("❌ Error iniciando SX1262, código:  %d\n", state);
     while (true) delay(1000);
@@ -464,7 +464,7 @@ void loop() {
     transmissionEndTime = millis();
     lastTransmissionTime = (transmissionEndTime - transmissionStartTime) / 1000.0;
     
-    lastSpeed = (lastFileSize * 8. 0 * currentREPEAT) / (lastTransmissionTime * 1000.0);
+    lastSpeed = (lastFileSize * 8.0 * currentREPEAT) / (lastTransmissionTime * 1000.0);
     
     if (result) {
       transmissionStatus = "✅ BROADCAST COMPLETO:  " + currentFile;
@@ -651,7 +651,7 @@ bool sendFile(const char* path) {
   
   // ✅ Calcular tiempo estimado
   float timePerChunk = 0.0;
-  if (currentBW >= 500. 0 && currentSF <= 7) timePerChunk = 0.15;
+  if (currentBW >= 500.0 && currentSF <= 7) timePerChunk = 0.15;
   else if (currentBW >= 250.0 && currentSF == 9) timePerChunk = 0.25;
   else if (currentBW == 125.0 && currentSF == 9) timePerChunk = 0.35;
   else timePerChunk = 0.8;  // SF12
