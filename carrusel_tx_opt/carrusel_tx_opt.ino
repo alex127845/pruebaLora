@@ -5,6 +5,15 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 
+// ✅ AGREGAR ESTAS LÍNEAS PARA CONFIGURACIÓN ASYNCTCP
+#ifndef CONFIG_ASYNC_TCP_RUNNING_CORE
+#define CONFIG_ASYNC_TCP_RUNNING_CORE 1
+#endif
+
+#ifndef CONFIG_ASYNC_TCP_USE_WDT
+#define CONFIG_ASYNC_TCP_USE_WDT 0
+#endif
+
 #define LORA_CS   8
 #define LORA_RST  12
 #define LORA_BUSY 13
@@ -104,9 +113,9 @@ void setup() {
     while(1) delay(1000);
   }
   Serial.println("✅ LittleFS montado");
-  Serial.printf("   Total:  %. 2f MB\n", LittleFS. totalBytes()/1048576.0);
+  Serial.printf("   Total:  %. 2f MB\n", LittleFS.totalBytes()/1048576.0);
   Serial.printf("   Usado: %.2f MB\n", LittleFS.usedBytes()/1048576.0);
-  Serial.printf("   Libre: %. 2f MB\n", (LittleFS.totalBytes() - LittleFS.usedBytes())/1048576.0);
+  Serial.printf("   Libre: %.2f MB\n", (LittleFS.totalBytes() - LittleFS.usedBytes())/1048576.0);
   listFiles();
 
   Serial.println("\n📡 Configurando WiFi AP...");
@@ -116,21 +125,26 @@ void setup() {
   Serial.printf("   SSID: %s\n", ssid);
   Serial.printf("   IP: %s\n\n", IP.toString().c_str());
 
-  setupWebServer();
+  // ✅ ESPERAR a que WiFi se estabilice
+  delay(1000);
 
   Serial.println("Iniciando radio...");
   enableVext(true);
   delay(200);
   int state = radio.begin(915.0);
   if (state != RADIOLIB_ERR_NONE) {
-    Serial.printf("❌ Error iniciando SX1262, código:  %d\n", state);
+    Serial.printf("❌ Error iniciando SX1262, código: %d\n", state);
     while (true) delay(1000);
   }
   
   applyLoRaConfig();
 
   Serial.println("✅ Radio configurado (MODO TX ONLY - SIN RECEPCIÓN)");
-  Serial.printf("🌐 Interfaz web: http://%s\n\n", IP.toString().c_str());
+  
+  // ✅ MOVER setupWebServer AL FINAL
+  setupWebServer();  // <-- MOVER AQUÍ
+  
+  Serial.printf("🌐 Interfaz web:  http://%s\n\n", IP.toString().c_str());
 }
 
 void applyLoRaConfig() {
@@ -450,8 +464,13 @@ void setupWebServer() {
     }
   });
 
+  // Delay antes de iniciar servidor
+  delay(500);
+
   server.begin();
   Serial.println("✅ Servidor web iniciado");
+
+  delay(100);
 }
 
 void loop() {
