@@ -651,7 +651,7 @@ void setup() {
   Serial.println("✅ Reset completado");
   
   // ✅ PASO 3: Configurar SPI estándar
-  Serial.println("📌 Inicializando SPI personalizado...");
+  Serial.println("📌 Inicializando SPI...");
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
   Serial.println("✅ SPI configurado");
   Serial.printf("   SCK: %d, MISO: %d, MOSI: %d, CS: %d\n", 
