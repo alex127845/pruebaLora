@@ -45,7 +45,6 @@ const char* password = "12345678";
 
 SX1262 radio = new Module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY);
 AsyncWebServer server(80);
-SPIClass* customSPI = nullptr;
 
 volatile bool receivedFlag = false;
 
@@ -651,19 +650,11 @@ void setup() {
   delay(200);
   Serial.println("✅ Reset completado");
   
-  // ✅ PASO 3: Configurar SPI personalizado
+  // ✅ PASO 3: Configurar SPI estándar
   Serial.println("📌 Inicializando SPI personalizado...");
-  customSPI = new SPIClass(HSPI);
-  customSPI->begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
-  
-  // Configurar velocidad SPI (más lenta para estabilidad)
-  customSPI->setFrequency(2000000);  // 2 MHz
-  customSPI->setDataMode(SPI_MODE0);
-  customSPI->setBitOrder(MSBFIRST);
-  
-  delay(200);
+  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
   Serial.println("✅ SPI configurado");
-  Serial.printf("   SCK: %d, MISO: %d, MOSI:  %d, CS: %d\n", 
+  Serial.printf("   SCK: %d, MISO: %d, MOSI: %d, CS: %d\n", 
                 LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
   
   // ✅ PASO 4: Inicializar LittleFS
@@ -685,89 +676,39 @@ void setup() {
   Serial.printf("   Pines: CS=%d, DIO1=%d, RST=%d, BUSY=%d\n", 
                 LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY);
   
-  // Opción 1: beginFSK con customSPI
-  Serial.println("   Método 1: beginFSK(434.0) con customSPI.. .");
-  int state = radio. beginFSK(434.0, 100.0, 50.0, 125.0, 10, 16, false, customSPI);
-  
-  if (state == RADIOLIB_ERR_NONE) {
-    Serial.println("   ✅ beginFSK OK");
-    
-    // Cambiar a modo LoRa
-    Serial.println("   Cambiando a modo LoRa (915 MHz)...");
-    state = radio.begin(915.0, currentBW, currentSF, currentCR, 0x12, 10, 8, 0, false);
-    
-    if (state == RADIOLIB_ERR_NONE) {
-      Serial.println("   ✅ Modo LoRa configurado");
-    } else {
-      Serial.printf("   ❌ Error en begin LoRa: %d\n", state);
-      while (1) delay(1000);
-    }
-    
-  } else {
-    Serial.printf("   ❌ Error en beginFSK: %d\n", state);
-    
-    // Intentar método alternativo
-    Serial.println("\n   Probando método 2: begin directo...");
-    state = radio.begin(915.0, currentBW, currentSF, currentCR, 0x12, 10, 8, 0, false);
-    
-    if (state == RADIOLIB_ERR_NONE) {
-      Serial.println("   ✅ begin directo OK");
-    } else {
-      Serial.printf("   ❌ Error en begin directo: %d\n", state);
-      Serial.println("\n🔍 DIAGNÓSTICO:");
-      Serial.println("   El módulo SX1262 NO responde");
-      Serial.println("\n   Verifique:");
-      Serial.println("   1. ✅ Conexiones físicas (cables firmes)");
-      Serial.println("   2. ✅ Alimentación 3.3V estable");
-      Serial.println("   3. ✅ Pines correctos según esquema");
-      Serial.println("   4. ✅ Módulo no dañado");
-      Serial.println("\n   Conexiones esperadas:");
-      Serial.println("   XIAO D7  (GPIO7)  → SX1262 SCK");
-      Serial.println("   XIAO D8  (GPIO8)  → SX1262 MISO");
-      Serial.println("   XIAO D9  (GPIO9)  → SX1262 MOSI");
-      Serial.println("   XIAO D10 (GPIO41) → SX1262 NSS/CS");
-      Serial.println("   XIAO D3  (GPIO39) → SX1262 DIO1");
-      Serial.println("   XIAO D2  (GPIO40) → SX1262 BUSY");
-      Serial.println("   XIAO D1  (GPIO42) → SX1262 RST");
-      Serial.println("   XIAO D0  (GPIO38) → SX1262 DIO2/RXEN");
-      Serial.println("   XIAO 3V3          → SX1262 VCC");
-      Serial.println("   XIAO GND          → SX1262 GND");
-      
-      while (1) delay(1000);
-    }
+  int state = radio.begin(915.0);
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.printf("❌ Error iniciando SX1262, código: %d\n", state);
+    while (true) delay(1000);
   }
   
-  // ✅ Configurar DIO2 como RF switch
-  Serial.println("   Configurando DIO2 como RF switch...");
+  // Configurar DIO2 como RF switch (control automático de antena)
   state = radio.setDio2AsRfSwitch(true);
   if (state != RADIOLIB_ERR_NONE) {
-    Serial.printf("   ⚠️ Advertencia DIO2: %d (puede ignorarse)\n", state);
-  } else {
-    Serial.println("   ✅ DIO2 configurado");
+    Serial.printf("⚠️  Advertencia: Error configurando DIO2 como RF switch: %d\n", state);
   }
   
-  // ✅ Configurar interrupción
-  Serial.println("   Configurando interrupción DIO1.. .");
+  // Aplicar configuración LoRa después de la inicialización
+  radio.setSpreadingFactor(currentSF);
+  radio.setBandwidth(currentBW);
+  radio.setCodingRate(currentCR);
+  radio.setSyncWord(0x12);
+  radio.setOutputPower(17);
+  
+  // Configurar interrupción e iniciar recepción
   radio.setDio1Action(setFlag);
-  Serial.println("   ✅ Interrupción configurada");
   
-  // ✅ Iniciar recepción
-  Serial. println("   Iniciando modo recepción...");
   state = radio.startReceive();
-  if (state == RADIOLIB_ERR_NONE) {
-    Serial.println("   ✅ Radio escuchando");
-  } else {
-    Serial. printf("   ⚠️ Error en startReceive: %d\n", state);
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.printf("❌ Error en startReceive: %d\n", state);
   }
   
-  Serial.println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  Serial.println("✅ RADIO CONFIGURADO CORRECTAMENTE");
-  Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  Serial.println("✅ Radio configurado");
+  Serial.println("👂 Escuchando paquetes LoRa...");
   Serial.printf("📻 Bandwidth:        %.1f kHz\n", currentBW);
   Serial.printf("📻 Spreading Factor: %d\n", currentSF);
   Serial.printf("📻 Coding Rate:      4/%d\n", currentCR);
   Serial.printf("📻 Frecuencia:       915 MHz\n");
-  Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
   
   // ✅ Iniciar servidor web
   delay(500);
