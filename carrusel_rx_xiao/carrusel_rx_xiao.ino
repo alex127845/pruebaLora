@@ -6,7 +6,7 @@
 #include <ESPAsyncWebServer.h>
 #include <SPI.h>
 
-// ✅ AGREGAR ESTAS LÍNEAS PARA ASYNCTCP (ESP32 Core 3. x)
+// ✅ AGREGAR ESTAS LÍNEAS PARA ASYNCTCP (ESP32 Core 3.x)
 #ifndef CONFIG_ASYNC_TCP_RUNNING_CORE
 #define CONFIG_ASYNC_TCP_RUNNING_CORE 1
 #endif
@@ -105,10 +105,11 @@ uint16_t crc16_ccitt(const uint8_t* data, size_t len) {
   return crc;
 }
 
-// ✅ Control RXEN (RX mode)
+// ✅ Control RXEN (RX mode) - MANTENER SIEMPRE ACTIVO
 void setRXMode(bool enable) {
   pinMode(LORA_RXEN, OUTPUT);
   digitalWrite(LORA_RXEN, enable ? HIGH : LOW);
+  Serial.printf("🔧 RX Mode: %s (RXEN=%d)\n", enable ? "ON" : "OFF", enable ? HIGH : LOW);
 }
 
 // ============================================
@@ -130,7 +131,7 @@ void cleanupSession() {
     currentSession.parityBlocks = nullptr;
   }
   
-  if (currentSession.tempFileName. length() > 0 && LittleFS.exists(currentSession.tempFileName)) {
+  if (currentSession.tempFileName.length() > 0 && LittleFS.exists(currentSession.tempFileName)) {
     LittleFS.remove(currentSession.tempFileName);
   }
   
@@ -163,14 +164,14 @@ bool startSession(uint32_t fileID, const String& fileName, uint32_t totalSize, u
   
   currentSession.chunkReceived = new bool[currentSession.totalChunks];
   if (currentSession.chunkReceived == nullptr) {
-    Serial.println("❌ Error:  no hay memoria para flags");
+    Serial.println("❌ Error: no hay memoria para flags");
     return false;
   }
   memset(currentSession.chunkReceived, 0, currentSession.totalChunks);
   
   currentSession.numParityBlocks = (currentSession.totalChunks + FEC_BLOCK_SIZE - 1) / FEC_BLOCK_SIZE;
-  currentSession.parityBlocks = new FileSession:: FECBlock[currentSession.numParityBlocks];
-  if (currentSession. parityBlocks == nullptr) {
+  currentSession.parityBlocks = new FileSession::FECBlock[currentSession.numParityBlocks];
+  if (currentSession.parityBlocks == nullptr) {
     delete[] currentSession.chunkReceived;
     currentSession.chunkReceived = nullptr;
     Serial.println("❌ Error: no hay memoria para bloques FEC");
@@ -196,7 +197,7 @@ bool startSession(uint32_t fileID, const String& fileName, uint32_t totalSize, u
   currentSession.lastPacketTime = millis();
   
   Serial.printf("✅ Sesión iniciada: %s (%u bytes, %u chunks)\n", 
-                fileName. c_str(), totalSize, currentSession.totalChunks);
+                fileName.c_str(), totalSize, currentSession.totalChunks);
   
   return true;
 }
@@ -205,7 +206,7 @@ bool startSession(uint32_t fileID, const String& fileName, uint32_t totalSize, u
 // ✅ GUARDAR CHUNK
 // ============================================
 bool saveChunk(uint16_t chunkIndex, const uint8_t* data, uint16_t length) {
-  if (! currentSession.active || chunkIndex >= currentSession.totalChunks) {
+  if (!currentSession.active || chunkIndex >= currentSession.totalChunks) {
     return false;
   }
   
@@ -232,14 +233,14 @@ bool saveChunk(uint16_t chunkIndex, const uint8_t* data, uint16_t length) {
   }
   
   currentSession.chunkReceived[chunkIndex] = true;
-  currentSession. chunksReceivedCount++;
+  currentSession.chunksReceivedCount++;
   currentSession.lastPacketTime = millis();
   
   return true;
 }
 
 // ============================================
-// ✅ FEC:  RECUPERAR CHUNKS PERDIDOS
+// ✅ FEC: RECUPERAR CHUNKS PERDIDOS
 // ============================================
 void attemptFECRecovery() {
   for (uint16_t blockIdx = 0; blockIdx < currentSession.numParityBlocks; blockIdx++) {
@@ -283,7 +284,7 @@ void attemptFECRecovery() {
         
         if (saveChunk(missingIdx, recoveredData, currentSession.chunkSize)) {
           totalRecovered++;
-          Serial.printf("✅ FEC:  recuperado chunk %u\n", missingIdx);
+          Serial.printf("✅ FEC: recuperado chunk %u\n", missingIdx);
         }
       }
       
@@ -319,9 +320,9 @@ void finalizeFile() {
   lastSpeed = speed;
   lastFileSize = currentSession.totalSize;
   
-  Serial.printf("✅ ARCHIVO RECIBIDO: %s (%u bytes en %. 2fs = %. 2f B/s)\n", 
+  Serial.printf("✅ ARCHIVO RECIBIDO: %s (%u bytes en %.2fs = %.2f B/s)\n", 
                 currentSession.fileName.c_str(), currentSession.totalSize, duration, speed);
-  Serial.printf("📊 Paquetes:  %u | Duplicados: %u | Recuperados FEC: %u\n",
+  Serial.printf("📊 Paquetes: %u | Duplicados: %u | Recuperados FEC: %u\n",
                 totalPacketsReceived, totalDuplicates, totalRecovered);
   
   cleanupSession();
@@ -365,12 +366,13 @@ void processManifest(const uint8_t* data, size_t len) {
   uint16_t calculatedCRC = crc16_ccitt(data + 2, 11 + nameLen);
   
   if (receivedCRC != calculatedCRC) {
-    Serial.println("❌ Manifest:  CRC inválido");
+    Serial.println("❌ Manifest: CRC inválido");
     totalCrcErrors++;
     return;
   }
   
-  if (! currentSession.active || currentSession.fileID != fileID) {
+  if (!currentSession.active || currentSession.fileID != fileID) {
+    Serial.printf("📡 MANIFEST RECIBIDO: %s (ID=0x%08X, %u bytes)\n", fileName, fileID, totalSize);
     startSession(fileID, String(fileName), totalSize, chunkSize);
   } else {
     currentSession.lastPacketTime = millis();
@@ -404,7 +406,14 @@ void processDataChunk(const uint8_t* data, size_t len) {
     return;
   }
   
-  saveChunk(chunkIndex, chunkData, dataLen);
+  if (saveChunk(chunkIndex, chunkData, dataLen)) {
+    // Progreso visual cada 10 chunks
+    if (chunkIndex % 10 == 0) {
+      float progress = (currentSession.chunksReceivedCount * 100.0) / currentSession.totalChunks;
+      Serial.printf("📦 Recibiendo: %.1f%% (%u/%u chunks)\n", 
+                    progress, currentSession.chunksReceivedCount, currentSession.totalChunks);
+    }
+  }
 }
 
 // ============================================
@@ -438,7 +447,7 @@ void processParityBlock(const uint8_t* data, size_t len) {
   
   if (currentSession.parityBlocks[blockIndex].received) return;
   
-  currentSession. parityBlocks[blockIndex]. data = new uint8_t[dataLen];
+  currentSession.parityBlocks[blockIndex].data = new uint8_t[dataLen];
   if (currentSession.parityBlocks[blockIndex].data == nullptr) return;
   
   memcpy(currentSession.parityBlocks[blockIndex].data, parityData, dataLen);
@@ -492,11 +501,13 @@ void processPacket(const uint8_t* data, size_t len) {
     processParityBlock(data, len);
   } else if (magic1 == FILE_END_MAGIC_1 && magic2 == FILE_END_MAGIC_2) {
     processFileEnd(data, len);
+  } else {
+    Serial.printf("⚠️ Paquete desconocido: 0x%02X 0x%02X (len=%zu)\n", magic1, magic2, len);
   }
 }
 
 // ============================================
-// ✅ WEB SERVER - HTML
+// ✅ WEB SERVER - HTML (igual que antes)
 // ============================================
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -506,18 +517,18 @@ const char index_html[] PROGMEM = R"rawliteral(
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LoRa RX - XIAO ESP32-S3</title>
   <style>
-    body { font-family: Arial; margin: 20px; background:  #f0f0f0; }
-    .container { max-width: 800px; margin:  auto; background: white; padding: 20px; border-radius: 8px; }
+    body { font-family: Arial; margin: 20px; background: #f0f0f0; }
+    .container { max-width: 800px; margin: auto; background: white; padding: 20px; border-radius: 8px; }
     h1 { color: #333; }
     .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
     .active { background: #4CAF50; color: white; }
     .inactive { background: #ccc; color: #666; }
-    button { padding: 10px 20px; margin: 5px; background: #2196F3; color: white; border: none; border-radius:  4px; cursor: pointer; }
+    button { padding: 10px 20px; margin: 5px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; }
     button:hover { background: #0b7dda; }
     table { width: 100%; border-collapse: collapse; margin: 10px 0; }
     th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
     th { background: #4CAF50; color: white; }
-    . file-link { color: #2196F3; text-decoration: none; }
+    .file-link { color: #2196F3; text-decoration: none; }
     .file-link:hover { text-decoration: underline; }
   </style>
 </head>
@@ -525,7 +536,7 @@ const char index_html[] PROGMEM = R"rawliteral(
   <div class="container">
     <h1>📡 LoRa Receiver - XIAO ESP32-S3</h1>
     
-    <div class="status" id="status">Estado: Esperando... </div>
+    <div class="status" id="status">Estado: Esperando...</div>
     
     <h2>⚙️ Configuración LoRa</h2>
     <form action="/config" method="POST">
@@ -555,12 +566,12 @@ const char index_html[] PROGMEM = R"rawliteral(
     setInterval(() => {
       fetch('/stats').then(r => r.json()).then(d => {
         document.getElementById('status').className = d.active ? 'status active' : 'status inactive';
-        document.getElementById('status').textContent = d.active ?  '✅ Recibiendo:  ' + d.filename : '⏸️ Inactivo';
+        document.getElementById('status').textContent = d.active ? '✅ Recibiendo: ' + d.filename : '⏸️ Inactivo';
         document.getElementById('packets').textContent = d.packets;
         document.getElementById('crc').textContent = d.crc;
         document.getElementById('fec').textContent = d.fec;
         document.getElementById('dup').textContent = d.dup;
-        document. getElementById('speed').textContent = d.speed;
+        document.getElementById('speed').textContent = d.speed;
         document.getElementById('file').textContent = d.lastFile;
       });
     }, 1000);
@@ -577,13 +588,13 @@ void setupWebServer() {
   server.on("/stats", HTTP_GET, [](AsyncWebServerRequest *request) {
     String json = "{";
     json += "\"active\":" + String(currentSession.active ? "true" : "false") + ",";
-    json += "\"filename\": \"" + currentSession.fileName + "\",";
+    json += "\"filename\":\"" + currentSession.fileName + "\",";
     json += "\"packets\":" + String(totalPacketsReceived) + ",";
     json += "\"crc\":" + String(totalCrcErrors) + ",";
     json += "\"fec\":" + String(totalRecovered) + ",";
     json += "\"dup\":" + String(totalDuplicates) + ",";
-    json += "\"speed\": \"" + String(lastSpeed, 2) + " B/s\",";
-    json += "\"lastFile\": \"" + String(lastFileSize) + " bytes en " + String(lastReceptionTime, 2) + "s\"";
+    json += "\"speed\":\"" + String(lastSpeed, 2) + " B/s\",";
+    json += "\"lastFile\":\"" + String(lastFileSize) + " bytes en " + String(lastReceptionTime, 2) + "s\"";
     json += "}";
     request->send(200, "application/json", json);
   });
@@ -605,6 +616,10 @@ void setupWebServer() {
     radio.setSpreadingFactor(currentSF);
     radio.setCodingRate(currentCR);
     delay(100);
+    
+    // ✅ CRÍTICO: Volver a activar RXEN y recepción
+    setRXMode(true);
+    delay(50);
     radio.startReceive();
     
     request->send(200, "text/plain", "Configuración aplicada");
@@ -612,7 +627,6 @@ void setupWebServer() {
   
   server.serveStatic("/", LittleFS, "/");
   
-  // ✅ Agregar delay antes de iniciar el servidor
   delay(500);
   server.begin();
   
@@ -626,20 +640,20 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
   
-  Serial.println("🚀 LoRa RX - XIAO ESP32-S3 - DEBUG MODE");
+  Serial.println("🚀 LoRa RX - XIAO ESP32-S3 - BROADCAST MODE");
   
-  // ✅ PASO 1: Configurar pin RXEN PRIMERO
-  Serial.println("📌 Configurando pin RXEN.. .");
+  // ✅ PASO 1: Configurar pin RXEN PRIMERO Y MANTENERLO ACTIVO
+  Serial.println("📌 Configurando pin RXEN...");
   pinMode(LORA_RXEN, OUTPUT);
-  digitalWrite(LORA_RXEN, HIGH);
+  digitalWrite(LORA_RXEN, HIGH);  // ✅ ACTIVAR INMEDIATAMENTE
   delay(100);
-  Serial.println("✅ RXEN configurado");
+  Serial.println("✅ RXEN configurado y ACTIVO");
   
   // ✅ PASO 2: Configurar pines de control
   Serial.println("📌 Configurando pines de control...");
   pinMode(LORA_RST, OUTPUT);
   pinMode(LORA_CS, OUTPUT);
-  digitalWrite(LORA_CS, HIGH);  // CS en HIGH (inactivo)
+  digitalWrite(LORA_CS, HIGH);
   delay(100);
   
   // Reset manual del módulo
@@ -665,10 +679,10 @@ void setup() {
   Serial.println("✅ LittleFS montado");
   
   // ✅ PASO 5: Configurar WiFi AP
-  Serial.println("\n📡 Configurando WiFi AP.. .");
+  Serial.println("\n📡 Configurando WiFi AP...");
   WiFi.softAP(ssid, password);
   IPAddress IP = WiFi.softAPIP();
-  Serial.printf("✅ WiFi AP:  %s | IP: %s\n", ssid, IP.toString().c_str());
+  Serial.printf("✅ WiFi AP: %s | IP: %s\n", ssid, IP.toString().c_str());
   delay(1000);
   
   // ✅ PASO 6: Inicializar radio
@@ -682,33 +696,40 @@ void setup() {
     while (true) delay(1000);
   }
   
-  // Configurar DIO2 como RF switch (control automático de antena)
+  // Configurar DIO2 como RF switch (puede fallar en E22, no es crítico)
   state = radio.setDio2AsRfSwitch(true);
   if (state != RADIOLIB_ERR_NONE) {
-    Serial.printf("⚠️  Advertencia: Error configurando DIO2 como RF switch: %d\n", state);
+    Serial.printf("⚠️ Advertencia: Error configurando DIO2: %d (normal en E22)\n", state);
   }
   
-  // Aplicar configuración LoRa después de la inicialización
+  // ✅ CONFIGURACIÓN CRÍTICA: debe coincidir EXACTAMENTE con el TX
   radio.setSpreadingFactor(currentSF);
   radio.setBandwidth(currentBW);
   radio.setCodingRate(currentCR);
-  radio.setSyncWord(0x12);
+  radio.setSyncWord(0x12);  // ✅ CRÍTICO: debe ser 0x12
   radio.setOutputPower(17);
   
-  // Configurar interrupción e iniciar recepción
+  // Configurar interrupción
   radio.setDio1Action(setFlag);
   
+  // ✅ CRÍTICO: Asegurar que RXEN está activo ANTES de startReceive
+  setRXMode(true);
+  delay(100);
+  
+  // Iniciar recepción
   state = radio.startReceive();
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("❌ Error en startReceive: %d\n", state);
+    while (true) delay(1000);
   }
   
-  Serial.println("✅ Radio configurado");
-  Serial.println("👂 Escuchando paquetes LoRa...");
+  Serial.println("✅ Radio configurado y ESCUCHANDO");
   Serial.printf("📻 Bandwidth:        %.1f kHz\n", currentBW);
   Serial.printf("📻 Spreading Factor: %d\n", currentSF);
   Serial.printf("📻 Coding Rate:      4/%d\n", currentCR);
   Serial.printf("📻 Frecuencia:       915 MHz\n");
+  Serial.printf("📻 SyncWord:         0x12\n");
+  Serial.printf("📻 RXEN:             Pin %d = HIGH\n", LORA_RXEN);
   
   // ✅ Iniciar servidor web
   delay(500);
@@ -717,8 +738,8 @@ void setup() {
   Serial.println("✅ Servidor web activo");
   Serial.printf("🌐 Interfaz web: http://%s\n", IP.toString().c_str());
   Serial.println("\n📡 ESPERANDO DATOS LoRa...\n");
+  Serial.println("👂 Receptor ACTIVO - Esperando paquetes broadcast del Heltec...\n");
 }
-
 
 // ============================================
 // ✅ LOOP
@@ -732,15 +753,23 @@ void loop() {
     
     if (state == RADIOLIB_ERR_NONE) {
       size_t len = radio.getPacketLength();
+      float rssi = radio.getRSSI();
+      float snr = radio.getSNR();
+      
+      Serial.printf("📡 Paquete recibido: %zu bytes (RSSI=%.1f dBm, SNR=%.1f dB)\n", len, rssi, snr);
+      
       processPacket(buffer, len);
+    } else {
+      Serial.printf("⚠️ Error leyendo paquete: %d\n", state);
     }
     
+    // ✅ CRÍTICO: Volver a activar recepción después de leer
     radio.startReceive();
   }
   
   // ✅ Timeout de sesión
-  if (currentSession. active && (millis() - currentSession.lastPacketTime > RX_TIMEOUT)) {
-    Serial.println("⏱️ Timeout:  finalizando sesión.. .");
+  if (currentSession.active && (millis() - currentSession.lastPacketTime > RX_TIMEOUT)) {
+    Serial.println("⏱️ Timeout: finalizando sesión...");
     finalizeFile();
   }
   

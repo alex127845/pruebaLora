@@ -559,6 +559,7 @@ bool sendManifest(uint32_t fileID, uint32_t totalSize, uint16_t totalChunks, con
 // ============================================
 // ✅ TRANSMITIR DATA CHUNK (con CRC16)
 // ============================================
+// ✅ En la función sendDataChunk() (alrededor de línea 562)
 bool sendDataChunk(uint32_t fileID, uint16_t chunkIndex, uint16_t totalChunks, uint8_t* data, size_t len) {
   uint8_t dataPkt[2 + 4 + 2 + 2 + CHUNK_SIZE + 2];
   size_t idx = 0;
@@ -573,20 +574,24 @@ bool sendDataChunk(uint32_t fileID, uint16_t chunkIndex, uint16_t totalChunks, u
   uint16_t crc = crc16_ccitt(dataPkt, idx);
   memcpy(dataPkt + idx, &crc, 2); idx += 2;
   
+  // ✅ AGREGAR ESTO:
+  Serial.printf("📤 TX Chunk %u/%u (%zu bytes)... ", chunkIndex, totalChunks, idx);
+  
   int retries = 0;
   while (retries < MAX_RETRIES) {
     int state = radio.transmit(dataPkt, idx);
     if (state == RADIOLIB_ERR_NONE) {
+      Serial.println("✅ OK");  // ✅ AGREGAR ESTO
       return true;
     }
     
-    Serial.printf("⚠️  TX error %d, retry %d\n", state, retries + 1);
+    Serial.printf("❌ FALLO (error %d), retry %d\n", state, retries + 1);
     retries++;
     totalRetries++;
     delay(100);
   }
   
-  Serial.printf("❌ CRÍTICO:  Fallo persistente en chunk %u\n", chunkIndex);
+  Serial.printf("❌ CRÍTICO: Fallo persistente en chunk %u\n", chunkIndex);
   return false;
 }
 

@@ -224,7 +224,7 @@ void setup() {
   Serial.println("Iniciando radio SX1262...");
   enableVext(true);
   delay(200);
-  int state = radio.begin(915. 0);
+  int state = radio.begin(915.0);
   if (state != RADIOLIB_ERR_NONE) {
     Serial.printf("❌ Error iniciando SX1262: %d\n", state);
     while (true) delay(1000);
@@ -806,7 +806,7 @@ void finalizeFile() {
   
   unsigned long endTime = millis();
   lastReceptionTime = (endTime - currentSession.startTime) / 1000.0;
-  lastSpeed = (lastFileSize * 8. 0) / (lastReceptionTime * 1000.0);
+  lastSpeed = (lastFileSize * 8.0) / (lastReceptionTime * 1000.0);
   
   uint16_t chunksMissing = currentSession.totalChunks - currentSession.chunksReceivedCount;
   
