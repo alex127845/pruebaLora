@@ -511,8 +511,16 @@ void setupWebServer() {
 }
 
 void loop() {
+  static unsigned long lastDebugPrint = 0;
+  
+  // ✅ AGREGAR: Print cada 10 segundos para confirmar que está vivo
+  if (millis() - lastDebugPrint > 10000) {
+    Serial.println("👂 Escuchando... (radio activo)");
+    Serial.printf("   RSSI actual: %.1f dBm\n", radio.getRSSI());
+    lastDebugPrint = millis();
+  }
   // ✅ Timeout de sesión
-  if (currentSession. active && (millis() - currentSession.lastPacketTime) > RX_TIMEOUT) {
+  if (currentSession.active && (millis() - currentSession.lastPacketTime) > RX_TIMEOUT) {
     Serial.println("\n⚠️ TIMEOUT - Intentando recuperar con FEC...");
     attemptFECRecovery();
     finalizeFile();
@@ -527,8 +535,12 @@ void loop() {
     if (state == RADIOLIB_ERR_NONE) {
       size_t packetLen = radio.getPacketLength();
       
-      // ✅ Verificar CRC16 (últimos 2 bytes)
+      // ✅ AGREGAR DEBUGGING:
+      Serial.printf("📥 RX pkt: %u bytes, RSSI: %.1f dBm\n", packetLen, radio.getRSSI());
+      
+      // Verificar CRC16 (últimos 2 bytes)
       if (packetLen < 4) {
+        Serial.println("⚠️ Paquete muy corto");
         radio.startReceive();
         return;
       }
@@ -539,34 +551,50 @@ void loop() {
       
       if (crcRecv != crcCalc) {
         totalCrcErrors++;
+        Serial.printf("❌ CRC error (esperado: 0x%04X, recibido: 0x%04X)\n", crcCalc, crcRecv);
         radio.startReceive();
         return;
       }
       
       totalPacketsReceived++;
       
-      // ✅ Parsear por magic bytes
+      // Parsear por magic bytes
       if (buffer[0] == MANIFEST_MAGIC_1 && buffer[1] == MANIFEST_MAGIC_2) {
+        Serial.println("📋 Procesando MANIFEST");
         processManifest(buffer, packetLen);
       } 
       else if (buffer[0] == DATA_MAGIC_1 && buffer[1] == DATA_MAGIC_2) {
+        // Serial.println("📦 Procesando DATA chunk"); // Comentar para no saturar
         processDataChunk(buffer, packetLen);
       }
       else if (buffer[0] == PARITY_MAGIC_1 && buffer[1] == PARITY_MAGIC_2) {
+        Serial.println("🛡️ Procesando PARITY");
         processParityChunk(buffer, packetLen);
       }
       else if (buffer[0] == FILE_END_MAGIC_1 && buffer[1] == FILE_END_MAGIC_2) {
+        Serial.println("🏁 Procesando FILE_END");
         processFileEnd(buffer, packetLen);
+      } else {
+        Serial.printf("⚠️ Magic bytes desconocidos: 0x%02X 0x%02X\n", buffer[0], buffer[1]);
       }
       
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
       totalCrcErrors++;
+      Serial.println("❌ RadioLib CRC mismatch");
+    } else {
+      Serial.printf("❌ Error readData: %d\n", state);
     }
 
-    radio.startReceive();
+    // ✅ ASEGURAR QUE SE REINICIA LA RECEPCIÓN:
+    delay(5);  // Pequeño delay para estabilizar
+    int startState = radio.startReceive();
+    if (startState != RADIOLIB_ERR_NONE) {
+      Serial.printf("❌ Error reiniciando RX: %d\n", startState);
+    }
   }
   
   yield();
+  delay(10);  // ✅ Aumentar de 0 a 10ms para reducir carga del CPU
 }
 
 // ============================================

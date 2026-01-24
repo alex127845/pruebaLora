@@ -136,6 +136,19 @@ void setup() {
     Serial.printf("❌ Error iniciando SX1262, código: %d\n", state);
     while (true) delay(1000);
   }
+  // ✅ AGREGAR ESTAS LÍNEAS:
+  Serial.println("🔍 Poniendo radio en standby...");
+  state = radio.standby();
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.printf("❌ Error standby: %d\n", state);
+  }
+
+  Serial.println("🔍 Testeando transmisión...");
+  uint8_t testPkt[] = {0xAA, 0xBB, 0xCC};
+  state = radio.transmit(testPkt, 3);
+  Serial.printf("🔍 Test TX result: %d (0=OK)\n", state);
+  delay(100);
+  radio.standby();
   
   applyLoRaConfig();
 
@@ -380,7 +393,7 @@ void setupWebServer() {
     html += "}";
     html += "function sendFile(name) {";
     html += "  if(confirm('¿Transmitir ' + name + ' en modo BROADCAST?')) {";
-    html += "    fetch('/send? file=' + encodeURIComponent(name)).then(() => location.reload());";
+    html += "    fetch('/send?file=' + encodeURIComponent(name)).then(() => location.reload());";
     html += "  }";
     html += "}";
     html += "function deleteFile(name) {";
@@ -432,6 +445,9 @@ void setupWebServer() {
   });
 
   server.on("/send", HTTP_GET, [](AsyncWebServerRequest *request){
+    // ✅ AGREGAR DEBUG:
+    Serial.println("\n🔍 DEBUG: Endpoint /send llamado");
+    Serial.printf("🔍 DEBUG: Parámetros recibidos: %d\n", request->params());
     if (request->hasParam("file")) {
       String filename = request->getParam("file")->value();
       if (! filename.startsWith("/")) filename = "/" + filename;
@@ -542,18 +558,33 @@ bool sendManifest(uint32_t fileID, uint32_t totalSize, uint16_t totalChunks, con
   uint16_t chunkSize = CHUNK_SIZE;
   memcpy(manifestPkt + idx, &chunkSize, 2); idx += 2;
   manifestPkt[idx++] = nameLen;
-  memcpy(manifestPkt + idx, fileName. c_str(), nameLen); idx += nameLen;
+  memcpy(manifestPkt + idx, fileName.c_str(), nameLen); idx += nameLen;
   
   uint16_t crc = crc16_ccitt(manifestPkt, idx);
   memcpy(manifestPkt + idx, &crc, 2); idx += 2;
   
+  // ✅ AGREGAR DEBUGGING:
+  Serial.printf("📤 TX MANIFEST (%zu bytes, fileID=0x%08X)... ", idx, fileID);
+  
+  // ✅ Poner radio en standby antes de transmitir
+  radio.standby();
+  delay(10);
+  
   int state = radio.transmit(manifestPkt, idx);
-  if (state != RADIOLIB_ERR_NONE) {
-    Serial.printf("❌ Error manifest: %d\n", state);
+  
+  // ✅ AGREGAR REPORTE DETALLADO:
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.println("✅ OK");
+    return true;
+  } else {
+    Serial.printf("❌ FALLO código: %d\n", state);
+    // Códigos comunes:
+    // -1: ERR_CHIP_NOT_FOUND
+    // -2: ERR_PACKET_TOO_LONG
+    // -5: ERR_SPI_CMD_TIMEOUT
+    // -13: ERR_TX_TIMEOUT
     return false;
   }
-  
-  return true;
 }
 
 // ============================================
@@ -574,20 +605,26 @@ bool sendDataChunk(uint32_t fileID, uint16_t chunkIndex, uint16_t totalChunks, u
   uint16_t crc = crc16_ccitt(dataPkt, idx);
   memcpy(dataPkt + idx, &crc, 2); idx += 2;
   
-  // ✅ AGREGAR ESTO:
+  // ✅ AGREGAR ESTO ANTES DE TRANSMITIR:
+  radio.standby();  // Asegurar que la radio esté en standby
+  delay(10);        // Pequeño delay para estabilizar
+  
   Serial.printf("📤 TX Chunk %u/%u (%zu bytes)... ", chunkIndex, totalChunks, idx);
   
   int retries = 0;
   while (retries < MAX_RETRIES) {
     int state = radio.transmit(dataPkt, idx);
     if (state == RADIOLIB_ERR_NONE) {
-      Serial.println("✅ OK");  // ✅ AGREGAR ESTO
+      Serial.println("✅ OK");
       return true;
     }
     
     Serial.printf("❌ FALLO (error %d), retry %d\n", state, retries + 1);
     retries++;
     totalRetries++;
+    
+    // ✅ AGREGAR: Reintentar con reset de radio
+    radio.standby();
     delay(100);
   }
   
@@ -648,6 +685,8 @@ bool sendFileEnd(uint32_t fileID, uint16_t totalChunks) {
 // ✅ ENVIAR ARCHIVO CON CARRUSEL + INTERLEAVING + FEC
 // ============================================
 bool sendFile(const char* path) {
+  Serial.println("\n🔍 DEBUG: sendFile() llamado");  // ✅ AGREGAR
+  Serial.printf("🔍 DEBUG: path = %s\n", path);      // ✅ AGREGAR
   File f = LittleFS.open(path, "r");
   if (!f) {
     Serial.printf("❌ Archivo no existe: %s\n", path);
