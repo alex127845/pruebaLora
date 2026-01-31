@@ -182,7 +182,7 @@ void applyLoRaConfig() {
   }
   
   radio.setSyncWord(0x12);
-  radio.setOutputPower(17);
+  radio.setOutputPower(10);
   
   delay(100);
   
