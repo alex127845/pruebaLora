@@ -342,28 +342,31 @@ void setFlag(void) {
 // ✅ PROCESAR MANIFEST
 // ============================================
 void processManifest(const uint8_t* data, size_t len) {
-  if (len < 16) return;
+  if (len < 17) return;  // Mínimo: 2 magic + 4 fileID + 4 size + 2 chunks + 2 chunkSize + 1 nameLen + 2 CRC
   
   uint32_t fileID;
-  memcpy(&fileID, data + 2, 4);
-  
   uint32_t totalSize;
-  memcpy(&totalSize, data + 6, 4);
-  
+  uint16_t totalChunks;  // ✅ AGREGAR
   uint16_t chunkSize;
-  memcpy(&chunkSize, data + 10, 2);
   
-  uint8_t nameLen = data[12];
-  if (nameLen == 0 || nameLen > 64 || len < 13 + nameLen + 2) return;
+  size_t idx = 2;  // Saltar magic bytes
+  memcpy(&fileID, data + idx, 4); idx += 4;           // [2-5]
+  memcpy(&totalSize, data + idx, 4); idx += 4;        // [6-9]
+  memcpy(&totalChunks, data + idx, 2); idx += 2;      // ✅ [10-11] AGREGAR
+  memcpy(&chunkSize, data + idx, 2); idx += 2;        // [12-13]
+  uint8_t nameLen = data[idx++];                      // [14]
+  
+  if (nameLen == 0 || nameLen > 64 || len < (idx + nameLen + 2)) return;
   
   char fileName[65];
-  memcpy(fileName, data + 13, nameLen);
+  memcpy(fileName, data + idx, nameLen);
   fileName[nameLen] = '\0';
+  idx += nameLen;
   
   uint16_t receivedCRC;
-  memcpy(&receivedCRC, data + 13 + nameLen, 2);
+  memcpy(&receivedCRC, data + idx, 2);
   
-  uint16_t calculatedCRC = crc16_ccitt(data + 2, 11 + nameLen);
+  uint16_t calculatedCRC = crc16_ccitt(data + 2, idx - 2);
   
   if (receivedCRC != calculatedCRC) {
     Serial.println("❌ Manifest: CRC inválido");
@@ -372,7 +375,8 @@ void processManifest(const uint8_t* data, size_t len) {
   }
   
   if (!currentSession.active || currentSession.fileID != fileID) {
-    Serial.printf("📡 MANIFEST RECIBIDO: %s (ID=0x%08X, %u bytes)\n", fileName, fileID, totalSize);
+    Serial.printf("📡 MANIFEST RECIBIDO: %s (ID=0x%08X, %u bytes, %u chunks)\n", 
+                  fileName, fileID, totalSize, totalChunks);
     startSession(fileID, String(fileName), totalSize, chunkSize);
   } else {
     currentSession.lastPacketTime = millis();
@@ -383,23 +387,27 @@ void processManifest(const uint8_t* data, size_t len) {
 // ✅ PROCESAR DATA CHUNK
 // ============================================
 void processDataChunk(const uint8_t* data, size_t len) {
-  if (!currentSession.active || len < 8) return;
+  if (!currentSession.active || len < 12) return;  // Mínimo: 2 magic + 4 fileID + 2 index + 2 totalChunks + 2 CRC
   
   uint32_t fileID;
-  memcpy(&fileID, data + 2, 4);
+  uint16_t chunkIndex;
+  uint16_t totalChunks;  // ✅ AGREGAR
+  
+  size_t idx = 2;  // Saltar magic bytes
+  memcpy(&fileID, data + idx, 4); idx += 4;          // [2-5]
+  memcpy(&chunkIndex, data + idx, 2); idx += 2;      // [6-7]
+  memcpy(&totalChunks, data + idx, 2); idx += 2;     // ✅ [8-9] AGREGAR
   
   if (fileID != currentSession.fileID) return;
+  if (chunkIndex >= currentSession.totalChunks) return;
   
-  uint16_t chunkIndex;
-  memcpy(&chunkIndex, data + 6, 2);
-  
-  uint16_t dataLen = len - 10;
-  const uint8_t* chunkData = data + 8;
+  uint16_t dataLen = len - idx - 2;  // ✅ CORREGIR: payload size (descontando CRC)
+  const uint8_t* chunkData = data + idx;  // ✅ CORREGIR: payload empieza en idx=[10]
   
   uint16_t receivedCRC;
   memcpy(&receivedCRC, data + len - 2, 2);
   
-  uint16_t calculatedCRC = crc16_ccitt(data + 2, len - 4);
+  uint16_t calculatedCRC = crc16_ccitt(data, len - 2);  // ✅ CORREGIR: calcular desde inicio hasta antes del CRC
   
   if (receivedCRC != calculatedCRC) {
     totalCrcErrors++;
@@ -407,7 +415,7 @@ void processDataChunk(const uint8_t* data, size_t len) {
   }
   
   if (saveChunk(chunkIndex, chunkData, dataLen)) {
-    // Progreso visual cada 10 chunks
+    // Progreso cada 10 chunks
     if (chunkIndex % 10 == 0) {
       float progress = (currentSession.chunksReceivedCount * 100.0) / currentSession.totalChunks;
       Serial.printf("📦 Recibiendo: %.1f%% (%u/%u chunks)\n", 
@@ -420,25 +428,25 @@ void processDataChunk(const uint8_t* data, size_t len) {
 // ✅ PROCESAR PARITY BLOCK
 // ============================================
 void processParityBlock(const uint8_t* data, size_t len) {
-  if (!currentSession.active || len < 8) return;
+  if (!currentSession.active || len < 10) return;  // Mínimo: 2 magic + 4 fileID + 2 blockIdx + 2 CRC
   
   uint32_t fileID;
-  memcpy(&fileID, data + 2, 4);
+  uint16_t blockIndex;
+  
+  size_t idx = 2;  // Saltar magic bytes
+  memcpy(&fileID, data + idx, 4); idx += 4;       // [2-5]
+  memcpy(&blockIndex, data + idx, 2); idx += 2;   // [6-7]
   
   if (fileID != currentSession.fileID) return;
-  
-  uint16_t blockIndex;
-  memcpy(&blockIndex, data + 6, 2);
-  
   if (blockIndex >= currentSession.numParityBlocks) return;
   
-  uint16_t dataLen = len - 10;
-  const uint8_t* parityData = data + 8;
+  uint16_t dataLen = len - idx - 2;  // ✅ CORREGIR
+  const uint8_t* parityData = data + idx;  // ✅ Payload empieza en [8]
   
   uint16_t receivedCRC;
   memcpy(&receivedCRC, data + len - 2, 2);
   
-  uint16_t calculatedCRC = crc16_ccitt(data + 2, len - 4);
+  uint16_t calculatedCRC = crc16_ccitt(data, len - 2);  // ✅ CORREGIR
   
   if (receivedCRC != calculatedCRC) {
     totalCrcErrors++;
@@ -455,23 +463,28 @@ void processParityBlock(const uint8_t* data, size_t len) {
   currentSession.parityBlocks[blockIndex].received = true;
   
   currentSession.lastPacketTime = millis();
+  Serial.printf("🛡️ Parity block %u recibido\n", blockIndex);
 }
 
 // ============================================
 // ✅ PROCESAR FILE END
 // ============================================
 void processFileEnd(const uint8_t* data, size_t len) {
-  if (!currentSession.active || len < 8) return;
+  if (!currentSession.active || len < 10) return;  // 2 magic + 4 fileID + 2 totalChunks + 2 CRC
   
   uint32_t fileID;
-  memcpy(&fileID, data + 2, 4);
+  uint16_t totalChunks;
+  
+  size_t idx = 2;
+  memcpy(&fileID, data + idx, 4); idx += 4;
+  memcpy(&totalChunks, data + idx, 2); idx += 2;  // ✅ AGREGAR (aunque no se use)
   
   if (fileID != currentSession.fileID) return;
   
   uint16_t receivedCRC;
-  memcpy(&receivedCRC, data + 6, 2);
+  memcpy(&receivedCRC, data + idx, 2);
   
-  uint16_t calculatedCRC = crc16_ccitt(data + 2, 4);
+  uint16_t calculatedCRC = crc16_ccitt(data, idx);  // ✅ CORREGIR
   
   if (receivedCRC != calculatedCRC) {
     totalCrcErrors++;
@@ -481,7 +494,6 @@ void processFileEnd(const uint8_t* data, size_t len) {
   Serial.println("📡 Señal de fin de archivo recibida");
   finalizeFile();
 }
-
 // ============================================
 // ✅ PROCESAR PAQUETE RECIBIDO
 // ============================================
@@ -509,82 +521,149 @@ void processPacket(const uint8_t* data, size_t len) {
 // ============================================
 // ✅ WEB SERVER - HTML (igual que antes)
 // ============================================
-const char index_html[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LoRa RX - XIAO ESP32-S3</title>
-  <style>
-    body { font-family: Arial; margin: 20px; background: #f0f0f0; }
-    .container { max-width: 800px; margin: auto; background: white; padding: 20px; border-radius: 8px; }
-    h1 { color: #333; }
-    .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
-    .active { background: #4CAF50; color: white; }
-    .inactive { background: #ccc; color: #666; }
-    button { padding: 10px 20px; margin: 5px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; }
-    button:hover { background: #0b7dda; }
-    table { width: 100%; border-collapse: collapse; margin: 10px 0; }
-    th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
-    th { background: #4CAF50; color: white; }
-    .file-link { color: #2196F3; text-decoration: none; }
-    .file-link:hover { text-decoration: underline; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>📡 LoRa Receiver - XIAO ESP32-S3</h1>
-    
-    <div class="status" id="status">Estado: Esperando...</div>
-    
-    <h2>⚙️ Configuración LoRa</h2>
-    <form action="/config" method="POST">
-      <label>Bandwidth (kHz): <input type="number" name="bw" value="125" step="0.1"></label><br><br>
-      <label>Spreading Factor: <input type="number" name="sf" value="9" min="7" max="12"></label><br><br>
-      <label>Coding Rate (4/x): <input type="number" name="cr" value="7" min="5" max="8"></label><br><br>
-      <button type="submit">Aplicar</button>
-    </form>
-    
-    <h2>📊 Estadísticas</h2>
-    <table>
-      <tr><th>Métrica</th><th>Valor</th></tr>
-      <tr><td>Paquetes recibidos</td><td id="packets">0</td></tr>
-      <tr><td>Errores CRC</td><td id="crc">0</td></tr>
-      <tr><td>Recuperados FEC</td><td id="fec">0</td></tr>
-      <tr><td>Duplicados</td><td id="dup">0</td></tr>
-      <tr><td>Última velocidad</td><td id="speed">-</td></tr>
-      <tr><td>Último archivo</td><td id="file">-</td></tr>
-    </table>
-    
-    <h2>📁 Archivos Recibidos</h2>
-    <div id="files"></div>
-    <button onclick="location.reload()">🔄 Actualizar</button>
-  </div>
-  
-  <script>
-    setInterval(() => {
-      fetch('/stats').then(r => r.json()).then(d => {
-        document.getElementById('status').className = d.active ? 'status active' : 'status inactive';
-        document.getElementById('status').textContent = d.active ? '✅ Recibiendo: ' + d.filename : '⏸️ Inactivo';
-        document.getElementById('packets').textContent = d.packets;
-        document.getElementById('crc').textContent = d.crc;
-        document.getElementById('fec').textContent = d.fec;
-        document.getElementById('dup').textContent = d.dup;
-        document.getElementById('speed').textContent = d.speed;
-        document.getElementById('file').textContent = d.lastFile;
-      });
-    }, 1000);
-  </script>
-</body>
-</html>
-)rawliteral";
-
 void setupWebServer() {
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send_P(200, "text/html", index_html);
+  // ============================================
+  // ✅ PÁGINA PRINCIPAL CON LISTA DE ARCHIVOS
+  // ============================================
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    String html = "<!DOCTYPE html><html><head>";
+    html += "<meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+    html += "<title>LoRa RX - XIAO</title>";
+    html += "<style>";
+    html += "body{font-family: Arial;background: linear-gradient(135deg,#667eea,#764ba2);color:#333;padding:20px;margin:0}";
+    html += ".container{max-width:900px;margin:0 auto;background:white;padding:30px;border-radius:15px;box-shadow:0 10px 40px rgba(0,0,0,0.2)}";
+    html += "h1{color:#333;border-bottom:3px solid #667eea;padding-bottom:15px;margin-bottom:25px}";
+    html += ".section{background:#f8f9fa;padding:20px;border-radius:10px;margin:20px 0}";
+    html += ".section h2{color:#667eea;margin-bottom:15px;font-size:1.3em}";
+    html += ".status{padding:15px;border-radius:8px;margin:15px 0;font-weight:bold}";
+    html += ".active{background:#d4edda;color:#155724;border-left:4px solid #28a745}";
+    html += ".inactive{background:#e2e3e5;color:#383d41;border-left:4px solid #6c757d}";
+    html += "table{width:100%;border-collapse:collapse;margin:10px 0}";
+    html += "th,td{padding:10px;text-align:left;border-bottom:1px solid #ddd}";
+    html += "th{background:#4CAF50;color:white}";
+    html += ".file-list{list-style:none;padding:0}";
+    html += ".file-item{background:white;padding:15px;margin:10px 0;border-radius:8px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 5px rgba(0,0,0,0.1)}";
+    html += ".file-info{flex-grow:1}";
+    html += ".file-name{font-weight:bold;color:#333;font-size:1.1em}";
+    html += ".file-size{color:#666;font-size:0.9em;margin-top:5px}";
+    html += ".btn-group{display:flex;gap:10px}";
+    html += "button{padding:10px 20px;border:none;border-radius:5px;cursor:pointer;font-size:14px;transition:all 0.3s}";
+    html += ".btn-download{background:#28a745;color:white}";
+    html += ".btn-download:hover{background:#218838}";
+    html += ".btn-delete{background:#dc3545;color:white}";
+    html += ".btn-delete:hover{background:#c82333}";
+    html += ".btn-config{background:#667eea;color:white;margin-top:15px;width:100%;padding:12px;font-weight:bold}";
+    html += ".btn-config:hover{background:#5568d3}";
+    html += ".btn-refresh{background:#17a2b8;color:white;margin-top:20px;width:100%;padding:12px;font-weight:bold}";
+    html += ".btn-refresh:hover{background:#138496}";
+    html += ".empty{text-align:center;color:#999;padding:30px}";
+    html += ".config-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:15px;margin-bottom:15px}";
+    html += ".config-group{background:white;padding:10px;border-radius:5px}";
+    html += ".config-group label{display:block;font-weight:bold;margin-bottom:5px;font-size:0.9em}";
+    html += ".config-group input{width:100%;padding:8px;border:2px solid #667eea;border-radius:5px}";
+    html += ".device-info{background:#e7f3ff;padding:15px;border-radius:8px;margin-bottom:20px;text-align:center}";
+    html += "</style></head><body><div class='container'>";
+    html += "<h1>📡 LoRa RX - XIAO ESP32-S3</h1>";
+    
+    html += "<div class='device-info'>";
+    html += "📟 <strong>Seeed XIAO ESP32-S3</strong> | 📡 <strong>E22-900M30S (SX1262)</strong> | 📶 <strong>915 MHz</strong>";
+    html += "</div>";
+    
+    // Estado de recepción
+    if (currentSession.active) {
+      float progress = (currentSession.chunksReceivedCount * 100.0) / currentSession.totalChunks;
+      html += "<div class='status active'>📡 Recibiendo: <strong>" + currentSession.fileName + "</strong> (" + String(progress, 1) + "%)</div>";
+    } else {
+      html += "<div class='status inactive'>⏸️ Inactivo - Esperando transmisión...</div>";
+    }
+    
+    // Configuración LoRa
+    html += "<div class='section'>";
+    html += "<h2>⚙️ Configuración LoRa</h2>";
+    html += "<form class='config-form'>";
+    html += "<div class='config-group'><label>BW (kHz)</label><input type='number' name='bw' value='" + String((int)currentBW) + "' step='1'></div>";
+    html += "<div class='config-group'><label>SF</label><input type='number' name='sf' value='" + String(currentSF) + "' min='7' max='12'></div>";
+    html += "<div class='config-group'><label>CR (4/x)</label><input type='number' name='cr' value='" + String(currentCR) + "' min='5' max='8'></div>";
+    html += "</form>";
+    html += "<button class='btn-config' onclick='applyConfig()'>✅ Aplicar Configuración</button>";
+    html += "</div>";
+    
+    // Estadísticas
+    if (lastReceptionTime > 0) {
+      html += "<div class='section'>";
+      html += "<h2>📊 Última Recepción</h2>";
+      html += "<table>";
+      html += "<tr><th>Métrica</th><th>Valor</th></tr>";
+      html += "<tr><td>Tiempo</td><td>" + String(lastReceptionTime, 2) + " s</td></tr>";
+      html += "<tr><td>Tamaño</td><td>" + String(lastFileSize/1024.0, 1) + " KB</td></tr>";
+      html += "<tr><td>Velocidad</td><td>" + String(lastSpeed, 2) + " B/s</td></tr>";
+      html += "<tr><td>Paquetes RX</td><td>" + String(totalPacketsReceived) + "</td></tr>";
+      html += "<tr><td>CRC Errors</td><td>" + String(totalCrcErrors) + "</td></tr>";
+      html += "<tr><td>FEC Recuperados</td><td>" + String(totalRecovered) + "</td></tr>";
+      html += "<tr><td>Duplicados</td><td>" + String(totalDuplicates) + "</td></tr>";
+      html += "</table></div>";
+    }
+    
+    // Lista de archivos
+    html += "<div class='section'>";
+    html += "<h2>📁 Archivos Recibidos</h2>";
+    
+    File root = LittleFS.open("/");
+    File file = root.openNextFile();
+    bool hasFiles = false;
+    
+    html += "<ul class='file-list'>";
+    while (file) {
+      if (!file.isDirectory() && !String(file.name()).startsWith("/temp_")) {
+        hasFiles = true;
+        String fullPath = String(file.name());
+        String displayName = fullPath;
+        if (displayName.startsWith("/")) displayName = displayName.substring(1);
+        
+        float sizeKB = file.size() / 1024.0;
+        String sizeStr = sizeKB < 1.0 ? String(file.size()) + " bytes" : String(sizeKB, 2) + " KB";
+        
+        html += "<li class='file-item'>";
+        html += "<div class='file-info'><div class='file-name'>📄 " + displayName + "</div>";
+        html += "<div class='file-size'>" + sizeStr + "</div></div>";
+        html += "<div class='btn-group'>";
+        html += "<button class='btn-download' onclick='location.href=\"/download?file=" + displayName + "\"'>📥 Descargar</button>";
+        html += "<button class='btn-delete' onclick='if(confirm(\"¿Eliminar " + displayName + "?\")) location.href=\"/delete?file=" + displayName + "\"'>🗑️ Borrar</button>";
+        html += "</div></li>";
+      }
+      file = root.openNextFile();
+    }
+    html += "</ul>";
+    
+    if (!hasFiles) {
+      html += "<div class='empty'>📭 Sin archivos. <br>Esperando transmisión LoRa...</div>";
+    }
+    
+    html += "</div>";
+    html += "<button class='btn-refresh' onclick='location.reload()'>🔄 Actualizar Página</button>";
+    
+    html += "<script>";
+    html += "function applyConfig(){";
+    html += "const bw=document.querySelector('input[name=bw]').value;";
+    html += "const sf=document.querySelector('input[name=sf]').value;";
+    html += "const cr=document.querySelector('input[name=cr]').value;";
+    html += "fetch(`/config?bw=${bw}&sf=${sf}&cr=${cr}`).then(()=>{alert('✅ Configuración aplicada');location.reload();});";
+    html += "}";
+    
+    // Auto-refresh si está recibiendo
+    if (currentSession.active) {
+      html += "setTimeout(()=>location.reload(),3000);";
+    }
+    
+    html += "</script>";
+    html += "</div></body></html>";
+    
+    request->send(200, "text/html", html);
   });
   
+  // ============================================
+  // ✅ ENDPOINT: ESTADÍSTICAS JSON
+  // ============================================
   server.on("/stats", HTTP_GET, [](AsyncWebServerRequest *request) {
     String json = "{";
     json += "\"active\":" + String(currentSession.active ? "true" : "false") + ",";
@@ -599,33 +678,91 @@ void setupWebServer() {
     request->send(200, "application/json", json);
   });
   
-  server.on("/config", HTTP_POST, [](AsyncWebServerRequest *request) {
-    if (request->hasParam("bw", true)) {
-      currentBW = request->getParam("bw", true)->value().toFloat();
+  // ============================================
+  // ✅ ENDPOINT: CONFIGURAR LORA
+  // ============================================
+  server.on("/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("bw") && request->hasParam("sf") && request->hasParam("cr")) {
+      if (currentSession.active) {
+        request->send(400, "text/plain", "No se puede cambiar durante recepción");
+        return;
+      }
+      
+      currentBW = request->getParam("bw")->value().toFloat();
+      currentSF = request->getParam("sf")->value().toInt();
+      currentCR = request->getParam("cr")->value().toInt();
+      
+      radio.standby();
+      delay(100);
+      radio.setBandwidth(currentBW);
+      radio.setSpreadingFactor(currentSF);
+      radio.setCodingRate(currentCR);
+      delay(100);
+      
+      // ✅ Reactivar RXEN y recepción
+      setRXMode(true);
+      delay(50);
+      radio.startReceive();
+      
+      Serial.printf("⚙️ Nueva config: BW=%.0f kHz, SF=%d, CR=4/%d\n", currentBW, currentSF, currentCR);
+      
+      request->send(200, "text/plain", "OK");
+    } else {
+      request->send(400, "text/plain", "Faltan parámetros");
     }
-    if (request->hasParam("sf", true)) {
-      currentSF = request->getParam("sf", true)->value().toInt();
-    }
-    if (request->hasParam("cr", true)) {
-      currentCR = request->getParam("cr", true)->value().toInt();
-    }
-    
-    radio.standby();
-    delay(100);
-    radio.setBandwidth(currentBW);
-    radio.setSpreadingFactor(currentSF);
-    radio.setCodingRate(currentCR);
-    delay(100);
-    
-    // ✅ CRÍTICO: Volver a activar RXEN y recepción
-    setRXMode(true);
-    delay(50);
-    radio.startReceive();
-    
-    request->send(200, "text/plain", "Configuración aplicada");
   });
   
-  server.serveStatic("/", LittleFS, "/");
+  // ============================================
+  // ✅ ENDPOINT: DESCARGAR ARCHIVO
+  // ============================================
+  server.on("/download", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (request->hasParam("file")) {
+      String filename = request->getParam("file")->value();
+      if (!filename.startsWith("/")) filename = "/" + filename;
+      
+      if (LittleFS.exists(filename)) {
+        String contentType = "application/octet-stream";
+        if (filename.endsWith(".pdf")) contentType = "application/pdf";
+        else if (filename.endsWith(".txt")) contentType = "text/plain";
+        else if (filename.endsWith(".jpg") || filename.endsWith(".jpeg")) contentType = "image/jpeg";
+        else if (filename.endsWith(".png")) contentType = "image/png";
+        else if (filename.endsWith(".html")) contentType = "text/html";
+        else if (filename.endsWith(".json")) contentType = "application/json";
+        
+        Serial.printf("📥 Descargando: %s\n", filename.c_str());
+        request->send(LittleFS, filename, contentType, true);  // true = download attachment
+      } else {
+        request->send(404, "text/plain", "Archivo no encontrado");
+      }
+    } else {
+      request->send(400, "text/plain", "Falta parámetro 'file'");
+    }
+  });
+  
+  // ============================================
+  // ✅ ENDPOINT: ELIMINAR ARCHIVO
+  // ============================================
+  server.on("/delete", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (request->hasParam("file")) {
+      String filename = request->getParam("file")->value();
+      if (!filename.startsWith("/")) filename = "/" + filename;
+      
+      // Evitar borrar archivos temporales activos
+      if (currentSession.active && filename == currentSession.tempFileName) {
+        request->send(400, "text/plain", "No se puede eliminar durante recepción");
+        return;
+      }
+      
+      if (LittleFS.remove(filename)) {
+        Serial.printf("🗑️ Eliminado: %s\n", filename.c_str());
+        request->redirect("/");
+      } else {
+        request->send(500, "text/plain", "Error al eliminar");
+      }
+    } else {
+      request->send(400, "text/plain", "Falta parámetro 'file'");
+    }
+  });
   
   delay(500);
   server.begin();
@@ -745,6 +882,16 @@ void setup() {
 // ✅ LOOP
 // ============================================
 void loop() {
+  // ✅ AGREGAR: Heartbeat cada 10 segundos
+  static unsigned long lastDebugPrint = 0;
+  if (millis() - lastDebugPrint > 10000) {
+    Serial.println("👂 Escuchando... (radio activo)");
+    float rssi = radio.getRSSI();
+    float snr = radio.getSNR();
+    Serial.printf("   RSSI: %.1f dBm | SNR: %.1f dB\n", rssi, snr);
+    lastDebugPrint = millis();
+  }
+  
   if (receivedFlag) {
     receivedFlag = false;
     
@@ -763,11 +910,11 @@ void loop() {
       Serial.printf("⚠️ Error leyendo paquete: %d\n", state);
     }
     
-    // ✅ CRÍTICO: Volver a activar recepción después de leer
+    // ✅ CRÍTICO: Volver a activar recepción
     radio.startReceive();
   }
   
-  // ✅ Timeout de sesión
+  // Timeout de sesión
   if (currentSession.active && (millis() - currentSession.lastPacketTime > RX_TIMEOUT)) {
     Serial.println("⏱️ Timeout: finalizando sesión...");
     finalizeFile();
