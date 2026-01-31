@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="#F5F5F5">
+
+    <!-- Título -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="🔍 Buscar Dispositivos Heltec"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:textColor="#333333"
+        android:gravity="center"
+        android:paddingBottom="16dp" />
+
+    <!-- Instrucciones -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Asegúrate de que tu Heltec esté encendido y con BLE activo"
+        android:textSize="14sp"
+        android:textColor="#666666"
+        android:gravity="center"
+        android:paddingBottom="16dp" />
+
+    <!-- Botón de escaneo -->
+    <Button
+        android:id="@+id/btnScan"
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:text="🔍 Escanear Heltec"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:backgroundTint="#2196F3" />
+
+    <!-- Barra de progreso -->
+    <ProgressBar
+        android:id="@+id/progressBar"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:indeterminate="true"
+        android:visibility="gone" />
+
+    <!-- Estado -->
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Presiona 'Escanear' para buscar dispositivos"
+        android:textSize="14sp"
+        android:textColor="#666666"
+        android:gravity="center"
+        android:paddingTop="8dp"
+        android:paddingBottom="16dp" />
+
+    <!-- Lista de dispositivos -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#FFFFFF"
+        android:elevation="2dp" />
+
+</LinearLayout>

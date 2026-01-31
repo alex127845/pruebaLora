@@ -1,0 +1,245 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F5F5F5">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <!-- ════════════════════════════════════════════════════════════ -->
+        <!-- INFORMACIÓN DEL DISPOSITIVO -->
+        <!-- ════════════════════════════════════════════════════════════ -->
+
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_margin="16dp"
+            app:cardCornerRadius="8dp"
+            app:cardElevation="4dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:id="@+id/tvDeviceName"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="📡 Heltec-TX"
+                    android:textSize="20sp"
+                    android:textStyle="bold"
+                    android:textColor="#333333" />
+
+                <TextView
+                    android:id="@+id/tvConnectionStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="🔄 Conectando..."
+                    android:textSize="14sp"
+                    android:textColor="#666666"
+                    android:layout_marginTop="8dp" />
+
+            </LinearLayout>
+
+        </androidx.cardview.widget.CardView>
+
+        <!-- ════════════════════════════════════════════════════════════ -->
+        <!-- CONFIGURACIÓN LORA (NUEVO) -->
+        <!-- ════════════════════════════════════════════════════════════ -->
+
+        <androidx.cardview.widget.CardView
+            android:id="@+id/cardLoRaConfig"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginEnd="16dp"
+            android:layout_marginBottom="16dp"
+            app:cardCornerRadius="8dp"
+            app:cardElevation="4dp"
+            app:cardBackgroundColor="#E3F2FD">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="368dp"
+                    android:layout_height="266dp"
+                    android:text="📡 Configuración LoRa"
+                    android:textColor="#1976D2"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvLoRaStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="📡 Modo: TRANSMISOR"
+                    android:textSize="14sp"
+                    android:textColor="#333333"
+                    android:layout_marginTop="8dp" />
+
+                <Button
+                    android:id="@+id/btnConfigLoRa"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="⚙️ Config: BW 125kHz, SF 9, CR 4/7"
+                    android:textSize="12sp"
+                    android:backgroundTint="#2196F3"
+                    android:layout_marginTop="12dp" />
+
+            </LinearLayout>
+
+        </androidx.cardview.widget.CardView>
+
+        <!-- ════════════════════════════════════════════════════════════ -->
+        <!-- PROGRESO TRANSMISIÓN LORA (NUEVO) -->
+        <!-- ════════════════════════════════════════════════════════════ -->
+
+        <LinearLayout
+            android:id="@+id/layoutLoRaTransmitting"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp"
+            android:background="#FFF3E0"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="📡 Transmitiendo por LoRa..."
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="#E65100"
+                android:gravity="center" />
+
+            <ProgressBar
+                android:id="@+id/progressBarLoRa"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="0"
+                android:layout_marginTop="8dp"
+                android:progressTint="#FF9800" />
+
+            <TextView
+                android:id="@+id/tvLoRaProgress"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Fragmento 0/0"
+                android:textSize="14sp"
+                android:textColor="#E65100"
+                android:gravity="center"
+                android:layout_marginTop="8dp" />
+
+        </LinearLayout>
+
+        <!-- ════════════════════════════════════════════════════════════ -->
+        <!-- BOTONES DE ACCIÓN -->
+        <!-- ════════════════════════════════════════════════════════════ -->
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="16dp"
+            android:paddingTop="0dp">
+
+            <Button
+                android:id="@+id/btnListFiles"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="📋 Listar"
+                android:backgroundTint="#4CAF50"
+                android:layout_marginEnd="8dp" />
+
+            <Button
+                android:id="@+id/btnUploadFile"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="📤 Subir"
+                android:backgroundTint="#2196F3"
+                android:layout_marginEnd="8dp" />
+
+            <Button
+                android:id="@+id/btnDisconnect"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="🔌 Salir"
+                android:backgroundTint="#F44336" />
+
+        </LinearLayout>
+
+        <!-- ════════════════════════════════════════════════════════════ -->
+        <!-- BARRA DE PROGRESO BLE -->
+        <!-- ════════════════════════════════════════════════════════════ -->
+
+        <LinearLayout
+            android:id="@+id/layoutProgress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp"
+            android:paddingTop="0dp"
+            android:visibility="gone">
+
+            <ProgressBar
+                android:id="@+id/progressBar"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="0" />
+
+            <TextView
+                android:id="@+id/tvProgressText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Procesando..."
+                android:textSize="14sp"
+                android:textColor="#666666"
+                android:gravity="center"
+                android:layout_marginTop="8dp" />
+
+        </LinearLayout>
+
+        <!-- ════════════════════════════════════════════════════════════ -->
+        <!-- LISTA DE ARCHIVOS -->
+        <!-- ════════════════════════════════════════════════════════════ -->
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="📂 Archivos en el Heltec"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#333333"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="8dp" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recyclerViewFiles"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="16dp"
+            android:nestedScrollingEnabled="false" />
+
+    </LinearLayout>
+
+</ScrollView>
